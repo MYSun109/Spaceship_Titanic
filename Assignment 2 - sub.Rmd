@@ -1,0 +1,2963 @@
+---
+title: "Assignment 2"
+author: "Mengyu Sun u7460189"
+date: "2022/5/4"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(GGally)
+library(ISLR)
+library(boot)
+library(MASS)
+library(caret)
+```
+
+#impot training data, test data, sample_submission data.
+```{r}
+train <- read.csv("train.csv", na.strings="", header=TRUE)
+test <- read.csv("test.csv", na.strings="", header=TRUE)
+submission <- read.csv("sample_submission.csv", na.strings="", header=TRUE)
+```
+
+```{r}
+#glance the data
+head(train)
+fix(train)
+```
+##Data preprocessing
+#Only use side of the ship, creat side variable
+```{r}
+#for train data
+Side <- rep(NA, nrow(train))
+Port <- grep("P", train$Cabin)
+Starb <- grep("S", train$Cabin)
+Side[Port] <- "P"
+Side[Starb] <- "S"
+Side <- as.factor(Side)
+train <- data.frame(Side, train)
+
+#for test data
+Side <- rep(NA, nrow(test))
+Port <- grep("P", test$Cabin)
+Starb <- grep("S", test$Cabin)
+Side[Port] <- "P"
+Side[Starb] <- "S"
+Side <- as.factor(Side)
+test <- data.frame(Side, test)
+```
+
+#some data transformation
+```{r}
+# train data
+#convert 0 and 1 to "False" and "True"
+train$CryoSleep <- as.logical(train$CryoSleep)
+train$CryoSleep <- as.numeric(train$CryoSleep)
+train$VIP <- as.logical(train$VIP)
+train$VIP <- as.numeric(train$VIP)
+#Making the type of Transported variable as logical.
+train$Transported <- as.logical(train$Transported)
+
+#making HomePlanet and Destination as factor
+train$HomePlanet<-as.factor(train$HomePlanet)
+train$Destination<-as.factor(train$Destination)
+
+#test data
+test$CryoSleep <- as.logical(test$CryoSleep)
+test$CryoSleep <- as.numeric(test$CryoSleep)
+test$VIP <- as.logical(test$VIP)
+test$VIP <- as.numeric(test$VIP)
+
+test$HomePlanet<-as.factor(test$HomePlanet)
+test$Destination<-as.factor(test$Destination)
+```
+
+
+
+```{r}
+#train data
+#split the PassengerId
+train$GroupId <- str_split(train$PassengerId,'_',simplify=TRUE)[,1]
+train$IndiId <- str_split(train$PassengerId,'_',simplify=TRUE)[,2]
+#extract the number of individuals from a group from PassengerID
+Num.Group <- as.numeric(sub(".*_", "", train$PassengerId)) 
+
+#test data
+test$GroupId <- str_split(test$PassengerId,'_',simplify=TRUE)[,1]
+test$IndiId <- str_split(test$PassengerId,'_',simplify=TRUE)[,2]
+Num.Group <- as.numeric(sub(".*_", "", test$PassengerId)) 
+```
+
+
+#(a) My Kaggle public name is 'Mengyu Sun' (User ID 10438946)
+
+#(b) remove first 1693 cases to creat a validation data set.
+```{r}
+validation <- train[-c(1:1693), ] 
+head(validation)
+```
+#(c)After data preprocessing, we can find that there are 6 continuous variables(Age,RoomService,FoodCourt,ShoppingMall,Spa,VRDeck), 3 categorical variables(Side,HomePlanet,Destination), and 3 logical variables (also called Boolean values)(CryoSleep,VIP,Transported) in the summary statistics table.
+
+The remaining variables are passenger IDs and names, which are text information with great uniqueness, so they are not qualified for regression. They will not be used as regression variables in the later selection of model variables, just to help with the processing of some missing data. For cabin variable, they won't be discussed here because this assignment requires us to focus only on Side.
+
+After eliminating some variables that are useless for regression, we still have 12 variables. According to the question information, Transported is the target variable we need to model and predict, so the remaining 11 variables will be used as alternative independent variables(covariates) of our model.
+For variables that will be used, we need to deal with missing values. We can find that other variables have many missing values except Transported. I will deal with these missing values next.
+```{r}
+summary(train)
+colSums(is.na(train))
+```
+
+According to the image we can see that most people choose not to enter suspended animation for the
+duration of the voyage.
+Also the vast majority of people are not VIP of the spacecraft. This means that passengers with missing VIP data are also highly likely not to be VIP, so when dealing with the missing value of VIP, I directly use 0 (false) instead. At the same time, because the difference between the number of VIPs and those who are not VIPs is too large, I initially predict that it may not be significantly significant in model fitting, that is, VIPs may not be the factor that causes passengers to transport dimensions.
+
+The number of passengers transported to another dimension is almost the same as that of those who are not transported. Therefore, we can preliminarily estimate that the probability of transporting is close to 50%, which may be random transported.
+
+
+We can also find that more than half of the passengers are from Earth. About 70 percent of the passengers were headed to TRAPPIST-1e . This tells us that we can simply set the missing value of the HomePlanet variable as earth and the missing value of the destination as TRAPPIST-1e. (Because missing values are not a large percentage of the total passenger population)
+
+For Side, the number of p is almost the same as s.
+Age looks like a bimodal distribution, but it also looks a little bit like a positive skewed distribution. At the same time, it can be found that more passengers around 25 years old, and interestingly, there are many children under 10 years old passengers. This may be because adults in their mid-20s and 30s bring their children with them, so there is a high probability that they will eventually be transported together. Therefore, the age variable is an important variable for the regression model.
+For the remaining luxury consumption variables, it can be found that they present extremely positive skewed distribution. The vast majority consume nothing or very little, but a few consume very much. The difference in these amounts is huge. Since these items are similar in nature and therefore similar in distribution, I suspect that they will show similar properties and associations in the regression model.So we can treat them as a class of variables for the moment.
+```{r}
+par(mfrow=c(3,4)) 
+#bool value
+hist(train$CryoSleep, xlab="CryoSleep")
+hist(train$VIP, xlab="VIP")
+train$Transported <- as.numeric(train$Transported)
+hist(train$Transported,xlab="Transported")
+#categorical var
+plot(train$HomePlanet, xlab="HomePlanet")
+plot(train$Destination, xlab="Destination")
+plot(train$Side, xlab="Side")
+#continuous
+hist(train$Age, xlab="Age")
+hist(train$RoomService, xlab="RoomService")
+hist(train$FoodCourt, xlab="FoodCourt")
+hist(train$ShoppingMall, xlab="ShoppingMall")
+hist(train$Spa, xlab="Spa")
+hist(train$VRDeck, xlab="VRDeck")
+```
+we can find that if the passengers elected to be put into suspended animation for the duration of the voyage(CryoSleep==True or 1), this indicates that they do not consume anything during their voyage.(RoomService, FoodCourt, ShoppingMall, Spa and VRDeck are all 0). This information is very useful for how we deal with the missing value. For the rest of the NA's in CryoSleep,we just let them=0.
+Also,we know that if the value of RoomService, FoodCourt, ShoppingMall, Spa and VRDeck >1, then we can say this person did not elect to be put into suspended animation(CryoSleep==False or 0). However,CryoSleep is a logical variable, and most passengers choose the option CryoSleep=0, so we can just let all missing values of Cryosleep =0.
+Also we can know that most people are not VIP,so we can just let missing value equals to 0.
+for Age and all the luxury bills amounts ,we just let missing values equal to the mean of this variable.
+```{r}
+#for train data
+# transform according to data of CryoSleep.
+train <-  train %>% 
+mutate(
+  RoomService = ifelse(CryoSleep == 1 & is.na(RoomService), 0 , RoomService),
+  FoodCourt = ifelse(CryoSleep == 1 & is.na(FoodCourt), 0 , FoodCourt),
+  ShoppingMall = ifelse(CryoSleep == 1 & is.na(ShoppingMall), 0 , ShoppingMall),
+  Spa = ifelse(CryoSleep == 1 & is.na(Spa), 0 , Spa),
+  VRDeck = ifelse(CryoSleep == 1 & is.na(VRDeck) , 0, VRDeck))
+```
+```{r}
+#letting all missing values pf Cryosleep =0, VIP=0.
+train$CryoSleep[is.na(train$CryoSleep)]=0
+train$VIP[is.na(train$VIP)]=0
+colSums(is.na(train))
+```
+
+```{r}
+mean(train$Age,na.rm = TRUE)
+mean(train$RoomService,na.rm = TRUE)
+mean(train$FoodCourt,na.rm = TRUE)
+mean(train$ShoppingMall,na.rm = TRUE)
+mean(train$Spa,na.rm = TRUE)
+mean(train$VRDeck,na.rm = TRUE)
+```
+
+
+
+```{r}
+# For the other missing values of Age, RoomService, FoodCourt, ShoppingMall, Spa and VRDeck, we should let it equal to the mean of each column.
+train$Age[is.na(train$Age)]<-28.82793 
+train$RoomService[is.na(train$RoomService)]<-222.9069
+train$FoodCourt[is.na(train$FoodCourt)]<-454.34
+train$ShoppingMall[is.na(train$ShoppingMall)]<-171.7856
+train$Spa[is.na(train$Spa)]<-308.7803
+train$VRDeck[is.na(train$VRDeck)]<-302.6485
+```
+```{r}
+hist(Num.Group)
+```
+Since passengers in the same group will most likely leave from the same place to the same destination, missing values can be replaced by groups. However, according to the plot, it can be found that most passengers are in a group of one or two, and few passengers are in a group of several. Therefore, this operation has little effect and can be directly taken to the Earth and TRAPPIST-1e.
+Also, the number of groups may be related to transported, but most people were single or in groups of two, so I didn't take this variable into account later.
+```{r}
+#NA's in HomePlanet and Destination
+train$HomePlanet[is.na(train$HomePlanet)]<-"Earth"
+train$Destination[is.na(train$Destination)]<-"TRAPPIST-1e"
+```
+
+```{r}
+#more people choose S, so we can just simple let all NA's in Side=S
+train$Side[is.na(train$Side)]<-"S"
+colSums(is.na(train))
+```
+
+#same method for test data and validation data.
+```{r}
+#for tset dataset
+test <-  test %>% 
+mutate(
+  RoomService = ifelse(CryoSleep == 1 & is.na(RoomService), 0 , RoomService),
+  FoodCourt = ifelse(CryoSleep == 1 & is.na(FoodCourt), 0 , FoodCourt),
+  ShoppingMall = ifelse(CryoSleep == 1 & is.na(ShoppingMall), 0 , ShoppingMall),
+  Spa = ifelse(CryoSleep == 1 & is.na(Spa), 0 , Spa),
+  VRDeck = ifelse(CryoSleep == 1 & is.na(VRDeck) , 0, VRDeck))
+
+#letting all missing values pf Cryosleep =0, VIP=0.
+test$CryoSleep[is.na(test$CryoSleep)]=0
+test$VIP[is.na(test$VIP)]=0
+
+mean(test$Age,na.rm = TRUE)
+mean(test$RoomService,na.rm = TRUE)
+mean(test$FoodCourt,na.rm = TRUE)
+mean(test$ShoppingMall,na.rm = TRUE)
+mean(test$Spa,na.rm = TRUE)
+mean(test$VRDeck,na.rm = TRUE)
+```
+
+```{r}
+test$Age[is.na(test$Age)]<-28.65815
+test$RoomService[is.na(test$RoomService)]<-219.2663
+test$FoodCourt[is.na(test$FoodCourt)]<-439.4843
+test$ShoppingMall[is.na(test$ShoppingMall)]<-177.2955
+test$Spa[is.na(test$Spa)]<-303.0524
+test$VRDeck[is.na(test$VRDeck)]<-310.71
+```
+
+```{r}
+test$HomePlanet[is.na(test$HomePlanet)]<-"Earth"
+test$Destination[is.na(test$Destination)]<-"TRAPPIST-1e"
+```
+```{r}
+test$Side[is.na(test$Side)]<-"S"
+```
+
+```{r}
+#for validation dataset
+validation <-  validation %>% 
+mutate(
+  RoomService = ifelse(CryoSleep == 1 & is.na(RoomService) , 0 , RoomService),
+  FoodCourt = ifelse(CryoSleep == 1 & is.na(FoodCourt), 0 , FoodCourt),
+  ShoppingMall = ifelse(CryoSleep == 1 & is.na(ShoppingMall), 0 , ShoppingMall),
+  Spa = ifelse(CryoSleep == 1 & is.na(Spa), 0 , Spa),
+  VRDeck = ifelse(CryoSleep == 1 & is.na(VRDeck), 0, VRDeck))
+#letting all missing values pf Cryosleep =0, VIP=0.
+validation$CryoSleep[is.na(validation$CryoSleep)]=0
+validation$VIP[is.na(validation$VIP)]=0
+
+mean(validation$Age,na.rm = TRUE)
+mean(validation$RoomService,na.rm = TRUE)
+mean(validation$FoodCourt,na.rm = TRUE)
+mean(validation$ShoppingMall,na.rm = TRUE)
+mean(validation$Spa,na.rm = TRUE)
+mean(validation$VRDeck,na.rm = TRUE)
+```
+
+```{r}
+# let NA equal to the mean of each column.
+validation$Age[is.na(validation$Age)]<-28.85668
+validation$RoomService[is.na(validation$RoomService)]<-220.764
+validation$FoodCourt[is.na(validation$FoodCourt)]<-453.8011
+validation$ShoppingMall[is.na(validation$ShoppingMall)]<-176.4407
+validation$Spa[is.na(validation$Spa)]<-306.4289
+validation$VRDeck[is.na(validation$VRDeck)]<-313.6563
+```
+
+```{r}
+#NA's in HomePlanet and Destination
+validation$HomePlanet[is.na(validation$HomePlanet)]<-"Earth"
+validation$Destination[is.na(validation$Destination)]<-"TRAPPIST-1e"
+```
+```{r}
+validation$Side[is.na(validation$Side)]<-"S"
+```
+here is the correlation tables of some variables.
+we can find that almost all the correlations are close to zero except for CryoSleep and Transported, so we can predict that there is no correlation among the covariates.
+the correlation between CryoSleep and Transported is  0.460132358(close to 0.5),which is the largest one in the table.Therefore, it can be inferred that there is a positive relationship between response variables(Transported) and covariables(CryoSleep). When selecting a model, we can prioritize the inclusion of this variable.
+```{r}
+cor(train[c(4,7,8,9,10,11,12,13,15)])
+```
+```{r}
+ggpairs(train, columns = c(4,7,8,9,10,11,12,13,15))
+```
+
+we can find there are some outliers in the luxury bills amounts on the top, this is probably because a few people spend a lot of money on luxury services.
+For Age, the variance is constant, and there is no clearly outliers, so we can trust this variable later.
+```{r}
+par(mfrow=c(2,4)) 
+plot(train$Age)
+plot(train$RoomService)
+plot(train$FoodCourt)
+plot(train$ShoppingMall)
+plot(train$Spa)
+plot(train$VRDeck)
+ggplot(train)+geom_bar(aes(VIP,fill=Transported))
+```
+
+
+#di First of all, according to the previous EDA analysis, I determined 11 variables as the alternative variables of the model. Since the question requires that model variables be selected by the forward selection method, I first establish 11 models containing one variable respectively, find a model with the minimum miss-classification rate by using l-fold cross-validation, and take the variable as the variables of the optimal model. In this way, the variable with the smallest miss-classification rate rate is successively added to the optimal model until no model with a smaller miss-classification rate rate exists. I'll just show you some of the code. (See the RMD file if you need to see more detail)
+#```{r}
+#select first variable
+train$Transported <- as.logical(train$Transported)
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+mse.1<-matrix(0)
+mse.2<-matrix(0)
+mse.3<-matrix(0)
+mse.4<-matrix(0)
+mse.5<-matrix(0)
+mse.6<-matrix(0)
+mse.7<-matrix(0)
+mse.8<-matrix(0)
+mse.9<-matrix(0)
+mse.10<-matrix(0)
+mse.11<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+glm.fit.train.1 <- glm(Transported ~ Side, family=binomial, data=data.train)
+glm.fit.train.2 <- glm(Transported ~ HomePlanet, family=binomial, data=data.train)
+glm.fit.train.3 <- glm(Transported ~ CryoSleep, family=binomial, data=data.train)
+glm.fit.train.4 <- glm(Transported ~ Destination, family=binomial, data=data.train)
+glm.fit.train.5 <- glm(Transported ~ Age, family=binomial, data=data.train)
+glm.fit.train.6 <- glm(Transported ~ VIP, family=binomial, data=data.train)
+glm.fit.train.7 <- glm(Transported ~ RoomService, family=binomial, data=data.train)
+glm.fit.train.8 <- glm(Transported ~ FoodCourt, family=binomial, data=data.train)
+glm.fit.train.9 <- glm(Transported ~ ShoppingMall, family=binomial, data=data.train)
+glm.fit.train.10 <- glm(Transported ~ Spa, family=binomial, data=data.train)
+glm.fit.train.11 <- glm(Transported ~ VRDeck, family=binomial, data=data.train)
+
+pred.test.1 <- predict(glm.fit.train.1, newdata = data.test,type="response")
+pred.test.2 <- predict(glm.fit.train.2, newdata = data.test,type="response")
+pred.test.3 <- predict(glm.fit.train.3, newdata = data.test,type="response")
+pred.test.4 <- predict(glm.fit.train.4, newdata = data.test,type="response")
+pred.test.5 <- predict(glm.fit.train.5, newdata = data.test,type="response")
+pred.test.6 <- predict(glm.fit.train.6, newdata = data.test,type="response")
+pred.test.7 <- predict(glm.fit.train.7, newdata = data.test,type="response")
+pred.test.8 <- predict(glm.fit.train.8, newdata = data.test,type="response")
+pred.test.9 <- predict(glm.fit.train.9, newdata = data.test,type="response")
+pred.test.10 <- predict(glm.fit.train.10, newdata = data.test,type="response")
+pred.test.11 <- predict(glm.fit.train.11, newdata = data.test,type="response")
+  
+y.hat.1 <- rep(0, n/k)
+y.hat.1[pred.test.1>=0.5] <- 1
+y.1 <- (data.test$Transported=="TRUE")*1
+mse.1[k]<- mean((y.1-y.hat.1)^2,na.rm = TRUE)
+
+y.hat.2 <- rep(0, n/k)
+y.hat.2[pred.test.2>=0.5] <- 1
+y.2 <- (data.test$Transported=="TRUE")*1
+mse.2[k]<- mean((y.2-y.hat.2)^2,na.rm = TRUE)
+
+y.hat.3 <- rep(0, n/k)
+y.hat.3[pred.test.3>=0.5] <- 1
+y.3 <- (data.test$Transported=="TRUE")*1
+mse.3[k]<- mean((y.3-y.hat.3)^2,na.rm = TRUE)
+
+y.hat.4 <- rep(0, n/k)
+y.hat.4[pred.test.4>=0.5] <- 1
+y.4 <- (data.test$Transported=="TRUE")*1
+mse.4[k]<- mean((y.4-y.hat.4)^2,na.rm = TRUE)
+
+y.hat.5 <- rep(0, n/k)
+y.hat.5[pred.test.5>=0.5] <- 1
+y.5 <- (data.test$Transported=="TRUE")*1
+mse.5[k]<- mean((y.5-y.hat.5)^2,na.rm = TRUE)
+
+y.hat.6 <- rep(0, n/k)
+y.hat.6[pred.test.6>=0.5] <- 1
+y.6 <- (data.test$Transported=="TRUE")*1
+mse.6[k]<- mean((y.6-y.hat.6)^2,na.rm = TRUE)
+
+y.hat.7 <- rep(0, n/k)
+y.hat.7[pred.test.7>=0.5] <- 1
+y.7 <- (data.test$Transported=="TRUE")*1
+mse.7[k]<- mean((y.7-y.hat.7)^2,na.rm = TRUE)
+
+y.hat.8 <- rep(0, n/k)
+y.hat.8[pred.test.8>=0.5] <- 1
+y.8 <- (data.test$Transported=="TRUE")*1
+mse.8[k]<- mean((y.8-y.hat.8)^2,na.rm = TRUE)
+
+y.hat.9 <- rep(0, n/k)
+y.hat.9[pred.test.9>=0.5] <- 1
+y.9 <- (data.test$Transported=="TRUE")*1
+mse.9[k]<- mean((y.9-y.hat.9)^2,na.rm = TRUE)
+
+y.hat.10 <- rep(0, n/k)
+y.hat.10[pred.test.10>=0.5] <- 1
+y.10 <- (data.test$Transported=="TRUE")*1
+mse.10[k]<- mean((y.10-y.hat.10)^2,na.rm = TRUE)
+
+y.hat.11 <- rep(0, n/k)
+y.hat.11[pred.test.11>=0.5] <- 1
+y.11 <- (data.test$Transported=="TRUE")*1
+mse.11[k]<- mean((y.11-y.hat.11)^2,na.rm = TRUE)
+#tab.1<-table(y.hat.1,y.1)
+#overall.1<-(tab.1[1,2]+tab.1[2,1])/sum(tab.1)
+}
+
+m1<-mean(mse.1)
+m2<-mean(mse.2)
+m3<-mean(mse.3)
+m4<-mean(mse.4)
+m5<-mean(mse.5)
+m6<-mean(mse.6)
+m7<-mean(mse.7)
+m8<-mean(mse.8)
+m9<-mean(mse.9)
+m10<-mean(mse.10)
+m11<-mean(mse.11)
+c(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11)
+mse.mean<-min(c(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11))
+mse.mean
+mse.sd.1<-sd(mse.1)/sqrt(k)
+mse.sd.1
+```
+we can find the smallest miss-classification is from model 3,which is variable CryoSleep. So I select this variable firstly.cv=0.2827178
+#select second variable(in RMD)
+we can find that model 7(Transported ~ FoodCourt+CryoSleep) have the smallest cv(0.2699545). 
+so add FoodCourt.
+
+#select third variable
+0.2461563 is the smallest rate from model8(Transported ~ VRDeck+CryoSleep+FoodCourt+Spa)
+So, add VRDeck variable.
+#select fifth variable
+model 6(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck) has the smallest mse(0.2165233),so add variable RoomService.
+#select six variable
+
+we can find that all mse are greater than 0.2. So maybe we can just stop here. 
+Also,we can find that the smallest rate is 0.2171331 (model5)which is larger than 0.2165233 in last part.
+So we can just stop here.
+and use last part's best model.
+Therefore, the best model is glm(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck, family=binomial, data=data.train). this model has the smallest cv.
+
+#calculate the best model's CV and SE.
+the CV is 0.2164674, SE=0.004407568;[cv,cv-se,cv+se]= [0.2164674, 0.2120598, 0.2208749]
+#```{r}
+#select 5 variable
+train$Transported <- as.logical(train$Transported)
+head(train)
+n<nrow(train)
+set.seed(100)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+mse<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+glm.fit.train <- glm(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck, family=binomial, data=data.train)
+
+pred.test <- predict(glm.fit.train, newdata = data.test,type="response")
+
+y.hat <- rep(0, n/k)
+y.hat[pred.test>=0.5] <- 1
+y <- (data.test$Transported=="TRUE")*1
+mse[k]<- mean((y-y.hat)^2,na.rm = TRUE)
+
+#tab<-table(y.hat,y)
+#overall<-(tab[1,2]+tab[2,1])/sum(tab)
+}
+mean(mse)
+
+mse.sd<-sd(mse)/sqrt(k)
+mse.sd
+print(c(mean(mse),mean(mse)-mse.sd,mean(mse)+mse.sd))
+```
+
+#ii.
+```{r}
+#best model with validation data set
+set.seed(7460189)
+
+glm.fit.validation <- glm(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck, family=binomial, data=validation)
+
+y.obs<-validation$Transported
+pred.validation <- predict(glm.fit.validation)
+pred <- rep("FALSE",length(y.obs))
+pred[pred.validation>=0.5] <- "TRUE"
+
+tab<-table(pred,y.obs)
+tab
+```
+
+So we can find the overall miss-classification rate is 24.3% 
+the false-positive rates is 15.20979%
+the false negative rates is 33.04372%
+```{r}
+#overall miss-classification rate
+overall<-(tab[1,2]+tab[2,1])/sum(tab)
+overall
+#false-positive rates
+false.pos<-tab[2,1]/(tab[2,1]+tab[1,1])
+false.pos
+#false negative rates
+false.neg<-tab[1,2]/(tab[1,2]+tab[2,2])
+false.neg
+```
+
+```{r}
+#vary the threshold
+threshold <- seq(0.01, 0.5, by=0.01)
+n.t <- length(threshold)
+
+overall <- rep(0, n.t)
+false.pos <- rep(0, n.t)
+false.neg <- rep(0, n.t)
+
+## second column is the probability for Yes
+for(i in 1:n.t){
+  
+  
+  y.obs<-validation$Transported
+  pred.validation <- predict(glm.fit.validation)
+ 
+  pred.i <- rep("FALSE", length(y.obs)) 
+  pred.i[pred.validation>= threshold[i]] <- "TRUE"
+  
+  tab <- table(pred.i, y.obs)
+  overall[i] <- (tab[1,2]+tab[2,1])/sum(tab)
+  false.pos[i] <- tab[2,1]/(tab[2,1]+tab[1,1])
+  false.neg[i] <- tab[1,2]/(tab[1,2]+tab[2,2])
+}
+```
+
+we can find that the false.negative rate increase with the increase of threshold.
+the overall rate are slightly increase as threshold increase
+the false.positive rate decrease with the increase of the threshold.
+so in order to decrese the false nrgative rate, we should reduce the threshold to around 0.08 or smaller.
+```{r}
+plot(threshold, overall, lwd=3, type="l", ylim=c(0, 0.8), ylab="Error Rate")
+lines(threshold, false.pos, col="orange", lwd=3)
+lines(threshold, false.neg, col="blue", lwd=3)
+legend("topleft", legend=c("overall", "false.pos", "false.neg"), col=c("black", "orange", "blue"), 
+       lty=c(1,1,1), lwd=3 )
+```
+
+
+
+#iii. 
+we can find the 95% confidence intervals for the regression coefficients are under below.
+```{r}
+glm.best.d <- glm(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck, family=binomial, data=train)
+glm.best.d
+summary(glm.best.d)
+confint(glm.best.d,level=0.95)
+```
+
+
+#iv. 
+
+we can find the intercept is 0.0333721642, se is 4.902605e-02, and the confidence interval is  ( -0.0686883316  0.135717177)
+for the regression coefficients, we can find that,
+                 coefficients         SE                  CI
+RoomService     -0.0013494308    1.178400e-04     (-0.0016269333 -0.001166313)
+CryoSleep       1.4613535773      5.988300e-02    (1.3537567341  1.568352343)
+FoodCourt       0.0007274074    4.404131e-05      (0.0006445618  0.000813300)
+Spa             -0.0016897826   1.386379e-04       ( -0.0019810250 -0.001404815)
+VRDeck          -0.0015248810   1.119999e-04       (-0.0017872168 -0.001324923)
+we can find the CIs of this part and CIs produced from using glm() are quite similar.
+For SE, although there are some differences between the two, these differences can be ignored because the magnitude of se is small enough.
+In summary, the results in this part is quite similar as those produced from using glm().
+```{r}
+boot.fn <- function(train, n){
+  out=matrix(0,nrow=n,ncol=6)
+  ce=c()
+  se=c()
+  ci_l=c()
+  ci_h=c()
+  ci=matrix(0,nrow=6,ncol=2)
+  for (i in 1:n){
+    Index <- sample(1:nrow(train), replace=TRUE)
+glm.fit <- glm(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck, family=binomial, data=train, subset=Index)
+out[i,] <- glm.fit$coefficient
+  }
+  for (j in 1:6){
+    
+    ce[j]=mean(out[,j])
+    se[j]=sd(out[,j])
+    ci_l[j]=quantile(out[,j],0.025)
+    ci_h[j]=quantile(out[,j],0.975)
+    for (a in 1:6){
+    ci[a,1]=ci_l[a]
+    ci[a,2]=ci_h[a]
+    }
+  }
+return(list(ce,se,ci))
+}
+set.seed(7460189)
+boot.fn(train, 100)
+```
+
+
+#v. 
+```{r}
+#for test data
+set.seed(7460189)
+boot.fn <- function(train, Index){
+glm.fit <- glm(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck, family=binomial, data=train, subset=Index)
+out <- predict(glm.fit,test[1:5,],type="response")
+return(out)
+}
+## Let's test the function based on a single bootstrap sample.
+## Always check your functions as you write them!
+n <- nrow(train)
+Index <- sample(1:n, replace=TRUE)
+boot.fn(train, Index)
+
+library(boot)
+boot(train, boot.fn, 100)
+```
+the CIs forthe first 5 individuals in the test data set are under below.
+```{r}
+CI=matrix(0,nrow=5, ncol=2)
+cil=c(0.817583141-1.96*0.007135905,0.009214252-1.96*0.003009932,0.817583141-1.96*0.007135905,0.975369159-1.96*0.007135905,0.504961034-1.96*0.012518881)
+cih=c(0.817583141+1.96*0.007135905,0.009214252+1.96*0.003009932,0.817583141+1.96*0.007135905,0.975369159+1.96*0.007135905,0.504961034+1.96*0.012518881)
+ for (i in 1:5){
+    CI[i,1]=cil[i]
+    CI[i,2]=cih[i]
+ }
+CI
+```
+
+```{r}
+#for validation data
+set.seed(7460189)
+boot.fn1 <- function(train, Index){
+glm.fit <- glm(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck, family=binomial, data=train, subset=Index)
+out <- predict(glm.fit,validation[1:5,],type="response")
+return(out)
+}
+## Let's test the function based on a single bootstrap sample.
+## Always check your functions as you write them!
+n <- nrow(train)
+Index <- sample(1:n, replace=TRUE)
+boot.fn(train, Index)
+
+boot(train, boot.fn1, 100)
+```
+
+the CIs forthe first 5 individuals in the validation data set are under below.
+```{r}
+CI1=matrix(0,nrow=5, ncol=2)
+cil1=c(0.8175831-1.96*0.007135905,0.5083466-1.96*0.012687235,0.8175831-1.96*0.007135905,0.2169812-1.96*0.015722025,0.3169758-1.96*0.015058254)
+cih1=c(0.8175831+1.96*0.007135905,0.5083466+1.96*0.012687235,0.8175831+1.96*0.007135905,0.2169812+1.96*0.015722025,0.3169758+1.96*0.015058254)
+ for (i in 1:5){
+    CI1[i,1]=cil1[i]
+    CI1[i,2]=cih1[i]
+ }
+CI1
+```
+#vi. (4 points) From your “best” model in 1(d)i, using the test data set submit your predictions to Kaggle. what was the miss-classification rate? what was your ranking?
+My Score is  0.78442
+the miss-classification rate is 1- 0.78442=0.21558.
+My ranking is 1324.
+```{r}
+glm.best.d <- glm(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck, family=binomial, data=train)
+glm.best.d
+
+pred.test.d <- predict(glm.best.d, newdata = test,type="response")
+y.hat.d <- rep(0, length(test))
+y.hat.d[pred.test.d>=0.5] <- 1
+y.hat.d[pred.test.d<0.5] <- 0
+y.hat.d<- as.factor(y.hat.d)
+y.hat.d<- recode_factor(y.hat.d,"1" = "True", "0" = "False")
+output <- data.frame(submission$PassengerId,y.hat.d)%>%
+  rename(Transported = y.hat.d)
+write_csv(output, "submission_d.csv")
+```
+
+
+
+#(e)i using lda
+same method as d
+```{r}
+library(MASS)
+#select first variable
+train$Transported <- as.logical(train$Transported)
+
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.1<-matrix(0)
+cv.2<-matrix(0)
+cv.3<-matrix(0)
+cv.4<-matrix(0)
+cv.5<-matrix(0)
+cv.6<-matrix(0)
+cv.7<-matrix(0)
+cv.8<-matrix(0)
+cv.9<-matrix(0)
+cv.10<-matrix(0)
+cv.11<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train.1 <- lda(Transported ~ Side, data=data.train)
+lda.fit.train.2 <- lda(Transported ~ HomePlanet, data=data.train)
+lda.fit.train.3 <- lda(Transported ~ CryoSleep, data=data.train)
+lda.fit.train.4 <- lda(Transported ~ Destination,data=data.train)
+lda.fit.train.5 <- lda(Transported ~ Age, data=data.train)
+lda.fit.train.6 <- lda(Transported ~ VIP,  data=data.train)
+lda.fit.train.7 <- lda(Transported ~ RoomService, data=data.train)
+lda.fit.train.8 <- lda(Transported ~ FoodCourt, data=data.train)
+lda.fit.train.9 <- lda(Transported ~ ShoppingMall, data=data.train)
+lda.fit.train.10 <- lda(Transported ~ Spa,  data=data.train)
+lda.fit.train.11 <- lda(Transported ~ VRDeck,  data=data.train)
+
+pred1.test.1 <- predict(lda.fit.train.1, newdata = data.test,type="response")$class
+pred1.test.2 <- predict(lda.fit.train.2, newdata = data.test,type="response")$class
+pred1.test.3 <- predict(lda.fit.train.3, newdata = data.test,type="response")$class
+pred1.test.4 <- predict(lda.fit.train.4, newdata = data.test,type="response")$class
+pred1.test.5 <- predict(lda.fit.train.5, newdata = data.test,type="response")$class
+pred1.test.6 <- predict(lda.fit.train.6, newdata = data.test,type="response")$class
+pred1.test.7 <- predict(lda.fit.train.7, newdata = data.test,type="response")$class
+pred1.test.8 <- predict(lda.fit.train.8, newdata = data.test,type="response")$class
+pred1.test.9 <- predict(lda.fit.train.9, newdata = data.test,type="response")$class
+pred1.test.10 <- predict(lda.fit.train.10, newdata = data.test,type="response")$class
+pred1.test.11 <- predict(lda.fit.train.11, newdata = data.test,type="response")$class
+  
+
+y1.1 <- data.test$Transported
+table(pred1.test.1, y1.1)
+cv.1[k]<- round(mean(pred1.test.1!=y1.1)*100,4)
+
+y1.2 <- data.test$Transported
+table(pred1.test.2, y1.2)
+cv.2[k]<- round(mean(pred1.test.2!=y1.2)*100,4)
+
+y1.3 <- data.test$Transported
+table(pred1.test.3, y1.3)
+cv.3[k]<- round(mean(pred1.test.3!=y1.3)*100,4)
+
+y1.4 <- data.test$Transported
+table(pred1.test.4, y1.4)
+cv.4[k]<- round(mean(pred1.test.4!=y1.4)*100,4)
+
+y1.5 <- data.test$Transported
+table(pred1.test.5, y1.5)
+cv.5[k]<- round(mean(pred1.test.5!=y1.5)*100,4)
+
+y1.6 <- data.test$Transported
+table(pred1.test.6, y1.6)
+cv.6[k]<- round(mean(pred1.test.6!=y1.6)*100,4)
+
+y1.7 <- data.test$Transported
+table(pred1.test.7, y1.7)
+cv.7[k]<- round(mean(pred1.test.7!=y1.7)*100,4)
+
+y1.8 <- data.test$Transported
+table(pred1.test.8, y1.8)
+cv.8[k]<- round(mean(pred1.test.8!=y1.8)*100,4)
+
+y1.9 <- data.test$Transported
+table(pred1.test.9, y1.9)
+cv.9[k]<- round(mean(pred1.test.9!=y1.9)*100,4)
+
+y1.10 <- data.test$Transported
+table(pred1.test.10, y1.10)
+cv.10[k]<- round(mean(pred1.test.10!=y1.10)*100,4)
+
+y1.11 <- data.test$Transported
+table(pred1.test.11, y1.11)
+cv.11[k]<- round(mean(pred1.test.11!=y1.11)*100,4)
+}
+
+m1<-mean(cv.1)
+m2<-mean(cv.2)
+m3<-mean(cv.3)
+m4<-mean(cv.4)
+m5<-mean(cv.5)
+m6<-mean(cv.6)
+m7<-mean(cv.7)
+m8<-mean(cv.8)
+m9<-mean(cv.9)
+m10<-mean(cv.10)
+m11<-mean(cv.11)
+c(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11)
+mse.mean<-min(c(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11))
+mse.mean
+```
+
+we can find the smallest one is from model 3(Transported ~ CryoSleep), so add CryoSleep.
+28.17217
+
+
+```{r}
+#select 2 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.1<-matrix(0)
+cv.2<-matrix(0)
+cv.3<-matrix(0)
+cv.4<-matrix(0)
+cv.5<-matrix(0)
+cv.6<-matrix(0)
+cv.7<-matrix(0)
+cv.8<-matrix(0)
+cv.9<-matrix(0)
+cv.10<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train.1 <- lda(Transported ~ Side+CryoSleep, data=data.train)
+lda.fit.train.2 <- lda(Transported ~ HomePlanet+CryoSleep, data=data.train)
+
+lda.fit.train.3 <- lda(Transported ~ Destination+CryoSleep,data=data.train)
+lda.fit.train.4 <- lda(Transported ~ Age+CryoSleep, data=data.train)
+lda.fit.train.5 <- lda(Transported ~ VIP+CryoSleep,  data=data.train)
+lda.fit.train.6 <- lda(Transported ~ RoomService+CryoSleep, data=data.train)
+lda.fit.train.7 <- lda(Transported ~ FoodCourt+CryoSleep, data=data.train)
+lda.fit.train.8 <- lda(Transported ~ ShoppingMall+CryoSleep, data=data.train)
+lda.fit.train.9 <- lda(Transported ~ Spa+CryoSleep,  data=data.train)
+lda.fit.train.10 <- lda(Transported ~ VRDeck+CryoSleep,  data=data.train)
+
+pred1.test.1 <- predict(lda.fit.train.1, newdata = data.test,type="response")$class
+pred1.test.2 <- predict(lda.fit.train.2, newdata = data.test,type="response")$class
+pred1.test.3 <- predict(lda.fit.train.3, newdata = data.test,type="response")$class
+pred1.test.4 <- predict(lda.fit.train.4, newdata = data.test,type="response")$class
+pred1.test.5 <- predict(lda.fit.train.5, newdata = data.test,type="response")$class
+pred1.test.6 <- predict(lda.fit.train.6, newdata = data.test,type="response")$class
+pred1.test.7 <- predict(lda.fit.train.7, newdata = data.test,type="response")$class
+pred1.test.8 <- predict(lda.fit.train.8, newdata = data.test,type="response")$class
+pred1.test.9 <- predict(lda.fit.train.9, newdata = data.test,type="response")$class
+pred1.test.10 <- predict(lda.fit.train.10, newdata = data.test,type="response")$class
+  
+
+y1.1 <- data.test$Transported
+table(pred1.test.1, y1.1)
+cv.1[k]<- round(mean(pred1.test.1!=y1.1)*100,4)
+
+y1.2 <- data.test$Transported
+table(pred1.test.2, y1.2)
+cv.2[k]<- round(mean(pred1.test.2!=y1.2)*100,4)
+
+y1.3 <- data.test$Transported
+table(pred1.test.3, y1.3)
+cv.3[k]<- round(mean(pred1.test.3!=y1.3)*100,4)
+
+y1.4 <- data.test$Transported
+table(pred1.test.4, y1.4)
+cv.4[k]<- round(mean(pred1.test.4!=y1.4)*100,4)
+
+y1.5 <- data.test$Transported
+table(pred1.test.5, y1.5)
+cv.5[k]<- round(mean(pred1.test.5!=y1.5)*100,4)
+
+y1.6 <- data.test$Transported
+table(pred1.test.6, y1.6)
+cv.6[k]<- round(mean(pred1.test.6!=y1.6)*100,4)
+
+y1.7 <- data.test$Transported
+table(pred1.test.7, y1.7)
+cv.7[k]<- round(mean(pred1.test.7!=y1.7)*100,4)
+
+y1.8 <- data.test$Transported
+table(pred1.test.8, y1.8)
+cv.8[k]<- round(mean(pred1.test.8!=y1.8)*100,4)
+
+y1.9 <- data.test$Transported
+table(pred1.test.9, y1.9)
+cv.9[k]<- round(mean(pred1.test.9!=y1.9)*100,4)
+
+y1.10 <- data.test$Transported
+table(pred1.test.10, y1.10)
+cv.10[k]<- round(mean(pred1.test.10!=y1.10)*100,4)
+}
+
+m1<-mean(cv.1)
+m2<-mean(cv.2)
+m3<-mean(cv.3)
+m4<-mean(cv.4)
+m5<-mean(cv.5)
+m6<-mean(cv.6)
+m7<-mean(cv.7)
+m8<-mean(cv.8)
+m9<-mean(cv.9)
+m10<-mean(cv.10)
+
+c(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10)
+```
+
+we can find model 7(Transported ~ FoodCourt+CryoSleep) has the smallest rate, so add variable FoodCourt.
+27.05639
+
+```{r}
+#select 3 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.1<-matrix(0)
+cv.2<-matrix(0)
+cv.3<-matrix(0)
+cv.4<-matrix(0)
+cv.5<-matrix(0)
+cv.6<-matrix(0)
+cv.7<-matrix(0)
+cv.8<-matrix(0)
+cv.9<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train.1 <- lda(Transported ~ Side+CryoSleep+FoodCourt, data=data.train)
+lda.fit.train.2 <- lda(Transported ~ HomePlanet+CryoSleep+FoodCourt, data=data.train)
+
+lda.fit.train.3 <- lda(Transported ~ Destination+CryoSleep+FoodCourt,data=data.train)
+lda.fit.train.4 <- lda(Transported ~ Age+CryoSleep+FoodCourt, data=data.train)
+lda.fit.train.5 <- lda(Transported ~ VIP+CryoSleep+FoodCourt,  data=data.train)
+lda.fit.train.6 <- lda(Transported ~ RoomService+CryoSleep+FoodCourt, data=data.train)
+
+lda.fit.train.7 <- lda(Transported ~ ShoppingMall+CryoSleep+FoodCourt, data=data.train)
+lda.fit.train.8 <- lda(Transported ~ Spa+CryoSleep+FoodCourt,  data=data.train)
+lda.fit.train.9 <- lda(Transported ~ VRDeck+CryoSleep+FoodCourt,  data=data.train)
+
+pred1.test.1 <- predict(lda.fit.train.1, newdata = data.test,type="response")$class
+pred1.test.2 <- predict(lda.fit.train.2, newdata = data.test,type="response")$class
+pred1.test.3 <- predict(lda.fit.train.3, newdata = data.test,type="response")$class
+pred1.test.4 <- predict(lda.fit.train.4, newdata = data.test,type="response")$class
+pred1.test.5 <- predict(lda.fit.train.5, newdata = data.test,type="response")$class
+pred1.test.6 <- predict(lda.fit.train.6, newdata = data.test,type="response")$class
+pred1.test.7 <- predict(lda.fit.train.7, newdata = data.test,type="response")$class
+pred1.test.8 <- predict(lda.fit.train.8, newdata = data.test,type="response")$class
+pred1.test.9 <- predict(lda.fit.train.9, newdata = data.test,type="response")$class
+  
+
+y1.1 <- data.test$Transported
+table(pred1.test.1, y1.1)
+cv.1[k]<- round(mean(pred1.test.1!=y1.1)*100,4)
+
+y1.2 <- data.test$Transported
+table(pred1.test.2, y1.2)
+cv.2[k]<- round(mean(pred1.test.2!=y1.2)*100,4)
+
+y1.3 <- data.test$Transported
+table(pred1.test.3, y1.3)
+cv.3[k]<- round(mean(pred1.test.3!=y1.3)*100,4)
+
+y1.4 <- data.test$Transported
+table(pred1.test.4, y1.4)
+cv.4[k]<- round(mean(pred1.test.4!=y1.4)*100,4)
+
+y1.5 <- data.test$Transported
+table(pred1.test.5, y1.5)
+cv.5[k]<- round(mean(pred1.test.5!=y1.5)*100,4)
+
+y1.6 <- data.test$Transported
+table(pred1.test.6, y1.6)
+cv.6[k]<- round(mean(pred1.test.6!=y1.6)*100,4)
+
+y1.7 <- data.test$Transported
+table(pred1.test.7, y1.7)
+cv.7[k]<- round(mean(pred1.test.7!=y1.7)*100,4)
+
+y1.8 <- data.test$Transported
+table(pred1.test.8, y1.8)
+cv.8[k]<- round(mean(pred1.test.8!=y1.8)*100,4)
+
+y1.9 <- data.test$Transported
+table(pred1.test.9, y1.9)
+cv.9[k]<- round(mean(pred1.test.9!=y1.9)*100,4)
+}
+
+m1<-mean(cv.1)
+m2<-mean(cv.2)
+m3<-mean(cv.3)
+m4<-mean(cv.4)
+m5<-mean(cv.5)
+m6<-mean(cv.6)
+m7<-mean(cv.7)
+m8<-mean(cv.8)
+m9<-mean(cv.9)
+
+c(m1,m2,m3,m4,m5,m6,m7,m8,m9)
+```
+
+model 8 (Transported ~ Spa+CryoSleep+FoodCourt) has the smallest rate, so add Spa next.
+26.30858
+
+
+```{r}
+#select 4 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.1<-matrix(0)
+cv.2<-matrix(0)
+cv.3<-matrix(0)
+cv.4<-matrix(0)
+cv.5<-matrix(0)
+cv.6<-matrix(0)
+cv.7<-matrix(0)
+cv.8<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train.1 <- lda(Transported ~ Side+CryoSleep+FoodCourt+Spa, data=data.train)
+lda.fit.train.2 <- lda(Transported ~ HomePlanet+CryoSleep+FoodCourt+Spa, data=data.train)
+lda.fit.train.3 <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa,data=data.train)
+lda.fit.train.4 <- lda(Transported ~ Age+CryoSleep+FoodCourt+Spa, data=data.train)
+lda.fit.train.5 <- lda(Transported ~ VIP+CryoSleep+FoodCourt+Spa,  data=data.train)
+lda.fit.train.6 <- lda(Transported ~ RoomService+CryoSleep+FoodCourt+Spa, data=data.train)
+lda.fit.train.7 <- lda(Transported ~ ShoppingMall+CryoSleep+FoodCourt+Spa, data=data.train)
+
+lda.fit.train.8 <- lda(Transported ~ VRDeck+CryoSleep+FoodCourt+Spa,  data=data.train)
+
+pred1.test.1 <- predict(lda.fit.train.1, newdata = data.test,type="response")$class
+pred1.test.2 <- predict(lda.fit.train.2, newdata = data.test,type="response")$class
+pred1.test.3 <- predict(lda.fit.train.3, newdata = data.test,type="response")$class
+pred1.test.4 <- predict(lda.fit.train.4, newdata = data.test,type="response")$class
+pred1.test.5 <- predict(lda.fit.train.5, newdata = data.test,type="response")$class
+pred1.test.6 <- predict(lda.fit.train.6, newdata = data.test,type="response")$class
+pred1.test.7 <- predict(lda.fit.train.7, newdata = data.test,type="response")$class
+pred1.test.8 <- predict(lda.fit.train.8, newdata = data.test,type="response")$class
+  
+
+y1.1 <- data.test$Transported
+table(pred1.test.1, y1.1)
+cv.1[k]<- round(mean(pred1.test.1!=y1.1)*100,4)
+
+y1.2 <- data.test$Transported
+table(pred1.test.2, y1.2)
+cv.2[k]<- round(mean(pred1.test.2!=y1.2)*100,4)
+
+y1.3 <- data.test$Transported
+table(pred1.test.3, y1.3)
+cv.3[k]<- round(mean(pred1.test.3!=y1.3)*100,4)
+
+y1.4 <- data.test$Transported
+table(pred1.test.4, y1.4)
+cv.4[k]<- round(mean(pred1.test.4!=y1.4)*100,4)
+
+y1.5 <- data.test$Transported
+table(pred1.test.5, y1.5)
+cv.5[k]<- round(mean(pred1.test.5!=y1.5)*100,4)
+
+y1.6 <- data.test$Transported
+table(pred1.test.6, y1.6)
+cv.6[k]<- round(mean(pred1.test.6!=y1.6)*100,4)
+
+y1.7 <- data.test$Transported
+table(pred1.test.7, y1.7)
+cv.7[k]<- round(mean(pred1.test.7!=y1.7)*100,4)
+
+y1.8 <- data.test$Transported
+table(pred1.test.8, y1.8)
+cv.8[k]<- round(mean(pred1.test.8!=y1.8)*100,4)
+}
+
+m1<-mean(cv.1)
+m2<-mean(cv.2)
+m3<-mean(cv.3)
+m4<-mean(cv.4)
+m5<-mean(cv.5)
+m6<-mean(cv.6)
+m7<-mean(cv.7)
+m8<-mean(cv.8)
+
+c(m1,m2,m3,m4,m5,m6,m7,m8)
+```
+we can find model 8(Transported ~ VRDeck+CryoSleep+FoodCourt+Spa) has the smallest rate, so add VRDeck.
+25.53782
+
+```{r}
+#select 5 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.1<-matrix(0)
+cv.2<-matrix(0)
+cv.3<-matrix(0)
+cv.4<-matrix(0)
+cv.5<-matrix(0)
+cv.6<-matrix(0)
+cv.7<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train.1 <- lda(Transported ~ Side+CryoSleep+FoodCourt+Spa+VRDeck, data=data.train)
+lda.fit.train.2 <- lda(Transported ~ HomePlanet+CryoSleep+FoodCourt+Spa+VRDeck, data=data.train)
+lda.fit.train.3 <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck,data=data.train)
+lda.fit.train.4 <- lda(Transported ~ Age+CryoSleep+FoodCourt+Spa+VRDeck, data=data.train)
+lda.fit.train.5 <- lda(Transported ~ VIP+CryoSleep+FoodCourt+Spa+VRDeck,  data=data.train)
+lda.fit.train.6 <- lda(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck, data=data.train)
+lda.fit.train.7 <- lda(Transported ~ ShoppingMall+CryoSleep+FoodCourt+Spa+VRDeck, data=data.train)
+
+pred1.test.1 <- predict(lda.fit.train.1, newdata = data.test,type="response")$class
+pred1.test.2 <- predict(lda.fit.train.2, newdata = data.test,type="response")$class
+pred1.test.3 <- predict(lda.fit.train.3, newdata = data.test,type="response")$class
+pred1.test.4 <- predict(lda.fit.train.4, newdata = data.test,type="response")$class
+pred1.test.5 <- predict(lda.fit.train.5, newdata = data.test,type="response")$class
+pred1.test.6 <- predict(lda.fit.train.6, newdata = data.test,type="response")$class
+pred1.test.7 <- predict(lda.fit.train.7, newdata = data.test,type="response")$class
+  
+
+y1.1 <- data.test$Transported
+table(pred1.test.1, y1.1)
+cv.1[k]<- round(mean(pred1.test.1!=y1.1)*100,4)
+
+y1.2 <- data.test$Transported
+table(pred1.test.2, y1.2)
+cv.2[k]<- round(mean(pred1.test.2!=y1.2)*100,4)
+
+y1.3 <- data.test$Transported
+table(pred1.test.3, y1.3)
+cv.3[k]<- round(mean(pred1.test.3!=y1.3)*100,4)
+
+y1.4 <- data.test$Transported
+table(pred1.test.4, y1.4)
+cv.4[k]<- round(mean(pred1.test.4!=y1.4)*100,4)
+
+y1.5 <- data.test$Transported
+table(pred1.test.5, y1.5)
+cv.5[k]<- round(mean(pred1.test.5!=y1.5)*100,4)
+
+y1.6 <- data.test$Transported
+table(pred1.test.6, y1.6)
+cv.6[k]<- round(mean(pred1.test.6!=y1.6)*100,4)
+
+y1.7 <- data.test$Transported
+table(pred1.test.7, y1.7)
+cv.7[k]<- round(mean(pred1.test.7!=y1.7)*100,4)
+}
+
+m1<-mean(cv.1)
+m2<-mean(cv.2)
+m3<-mean(cv.3)
+m4<-mean(cv.4)
+m5<-mean(cv.5)
+m6<-mean(cv.6)
+m7<-mean(cv.7)
+c(m1,m2,m3,m4,m5,m6,m7)
+```
+
+we can find the smallest one is from model 2 (Transported ~ HomePlanet+CryoSleep+FoodCourt+Spa+VRDeck), so add HomePlanet.
+24.67497
+
+
+```{r}
+#select 6 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.1<-matrix(0)
+cv.2<-matrix(0)
+cv.3<-matrix(0)
+cv.4<-matrix(0)
+cv.5<-matrix(0)
+cv.6<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train.1 <- lda(Transported ~ Side+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet, data=data.train)
+
+lda.fit.train.2 <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet,data=data.train)
+lda.fit.train.3 <- lda(Transported ~ Age+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet, data=data.train)
+lda.fit.train.4 <- lda(Transported ~ VIP+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet,  data=data.train)
+lda.fit.train.5 <- lda(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet, data=data.train)
+lda.fit.train.6 <- lda(Transported ~ ShoppingMall+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet, data=data.train)
+
+pred1.test.1 <- predict(lda.fit.train.1, newdata = data.test,type="response")$class
+pred1.test.2 <- predict(lda.fit.train.2, newdata = data.test,type="response")$class
+pred1.test.3 <- predict(lda.fit.train.3, newdata = data.test,type="response")$class
+pred1.test.4 <- predict(lda.fit.train.4, newdata = data.test,type="response")$class
+pred1.test.5 <- predict(lda.fit.train.5, newdata = data.test,type="response")$class
+pred1.test.6 <- predict(lda.fit.train.6, newdata = data.test,type="response")$class
+  
+
+y1.1 <- data.test$Transported
+table(pred1.test.1, y1.1)
+cv.1[k]<- round(mean(pred1.test.1!=y1.1)*100,4)
+
+y1.2 <- data.test$Transported
+table(pred1.test.2, y1.2)
+cv.2[k]<- round(mean(pred1.test.2!=y1.2)*100,4)
+
+y1.3 <- data.test$Transported
+table(pred1.test.3, y1.3)
+cv.3[k]<- round(mean(pred1.test.3!=y1.3)*100,4)
+
+y1.4 <- data.test$Transported
+table(pred1.test.4, y1.4)
+cv.4[k]<- round(mean(pred1.test.4!=y1.4)*100,4)
+
+y1.5 <- data.test$Transported
+table(pred1.test.5, y1.5)
+cv.5[k]<- round(mean(pred1.test.5!=y1.5)*100,4)
+
+y1.6 <- data.test$Transported
+table(pred1.test.6, y1.6)
+cv.6[k]<- round(mean(pred1.test.6!=y1.6)*100,4)
+}
+
+m1<-mean(cv.1)
+m2<-mean(cv.2)
+m3<-mean(cv.3)
+m4<-mean(cv.4)
+m5<-mean(cv.5)
+m6<-mean(cv.6)
+c(m1,m2,m3,m4,m5,m6)
+```
+
+model 6(Transported ~ ShoppingMall+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet) has the smallest rate, so add ShoppingMall.
+24.19186
+
+```{r}
+#select 7 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.1<-matrix(0)
+cv.2<-matrix(0)
+cv.3<-matrix(0)
+cv.4<-matrix(0)
+cv.5<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train.1 <- lda(Transported ~ Side+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall, data=data.train)
+
+lda.fit.train.2 <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall,data=data.train)
+lda.fit.train.3 <- lda(Transported ~ Age+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall, data=data.train)
+lda.fit.train.4 <- lda(Transported ~ VIP+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall,  data=data.train)
+lda.fit.train.5 <- lda(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall, data=data.train)
+
+pred1.test.1 <- predict(lda.fit.train.1, newdata = data.test,type="response")$class
+pred1.test.2 <- predict(lda.fit.train.2, newdata = data.test,type="response")$class
+pred1.test.3 <- predict(lda.fit.train.3, newdata = data.test,type="response")$class
+pred1.test.4 <- predict(lda.fit.train.4, newdata = data.test,type="response")$class
+pred1.test.5 <- predict(lda.fit.train.5, newdata = data.test,type="response")$class
+  
+
+y1.1 <- data.test$Transported
+table(pred1.test.1, y1.1)
+cv.1[k]<- round(mean(pred1.test.1!=y1.1)*100,4)
+
+y1.2 <- data.test$Transported
+table(pred1.test.2, y1.2)
+cv.2[k]<- round(mean(pred1.test.2!=y1.2)*100,4)
+
+y1.3 <- data.test$Transported
+table(pred1.test.3, y1.3)
+cv.3[k]<- round(mean(pred1.test.3!=y1.3)*100,4)
+
+y1.4 <- data.test$Transported
+table(pred1.test.4, y1.4)
+cv.4[k]<- round(mean(pred1.test.4!=y1.4)*100,4)
+
+y1.5 <- data.test$Transported
+table(pred1.test.5, y1.5)
+cv.5[k]<- round(mean(pred1.test.5!=y1.5)*100,4)
+}
+
+m1<-mean(cv.1)
+m2<-mean(cv.2)
+m3<-mean(cv.3)
+m4<-mean(cv.4)
+m5<-mean(cv.5)
+c(m1,m2,m3,m4,m5)
+```
+
+model 5(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall) has the smallest rate, so add RoomService for next.
+23.98466%
+
+
+```{r}
+#select 8 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.1<-matrix(0)
+cv.2<-matrix(0)
+cv.3<-matrix(0)
+cv.4<-matrix(0)
+
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train.1 <- lda(Transported ~ Side+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService, data=data.train)
+lda.fit.train.2 <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService,data=data.train)
+lda.fit.train.3 <- lda(Transported ~ Age+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService, data=data.train)
+lda.fit.train.4 <- lda(Transported ~ VIP+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService,  data=data.train)
+
+
+pred1.test.1 <- predict(lda.fit.train.1, newdata = data.test,type="response")$class
+pred1.test.2 <- predict(lda.fit.train.2, newdata = data.test,type="response")$class
+pred1.test.3 <- predict(lda.fit.train.3, newdata = data.test,type="response")$class
+pred1.test.4 <- predict(lda.fit.train.4, newdata = data.test,type="response")$class
+
+y1.1 <- data.test$Transported
+table(pred1.test.1, y1.1)
+cv.1[k]<- round(mean(pred1.test.1!=y1.1)*100,4)
+
+y1.2 <- data.test$Transported
+table(pred1.test.2, y1.2)
+cv.2[k]<- round(mean(pred1.test.2!=y1.2)*100,4)
+
+y1.3 <- data.test$Transported
+table(pred1.test.3, y1.3)
+cv.3[k]<- round(mean(pred1.test.3!=y1.3)*100,4)
+
+y1.4 <- data.test$Transported
+table(pred1.test.4, y1.4)
+cv.4[k]<- round(mean(pred1.test.4!=y1.4)*100,4)
+}
+
+m1<-mean(cv.1)
+m2<-mean(cv.2)
+m3<-mean(cv.3)
+m4<-mean(cv.4)
+c(m1,m2,m3,m4)
+```
+
+the smallest rate is 23.91570% from model model 1(Transported ~ Side+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService), so add Side.
+
+```{r}
+#select 9 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.1<-matrix(0)
+cv.2<-matrix(0)
+cv.3<-matrix(0)
+
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train.1 <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side,data=data.train)
+lda.fit.train.2 <- lda(Transported ~ Age+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side, data=data.train)
+lda.fit.train.3 <- lda(Transported ~ VIP+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side,  data=data.train)
+
+
+pred1.test.1 <- predict(lda.fit.train.1, newdata = data.test,type="response")$class
+pred1.test.2 <- predict(lda.fit.train.2, newdata = data.test,type="response")$class
+pred1.test.3 <- predict(lda.fit.train.3, newdata = data.test,type="response")$class
+
+y1.1 <- data.test$Transported
+table(pred1.test.1, y1.1)
+cv.1[k]<- round(mean(pred1.test.1!=y1.1)*100,4)
+
+y1.2 <- data.test$Transported
+table(pred1.test.2, y1.2)
+cv.2[k]<- round(mean(pred1.test.2!=y1.2)*100,4)
+
+y1.3 <- data.test$Transported
+table(pred1.test.3, y1.3)
+cv.3[k]<- round(mean(pred1.test.3!=y1.3)*100,4)
+}
+
+m1<-mean(cv.1)
+m2<-mean(cv.2)
+m3<-mean(cv.3)
+c(m1,m2,m3)
+```
+the smallest one is 23.57055% from model 2(Transported ~ Age+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side), so add Age.
+
+```{r}
+#select 10 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.1<-matrix(0)
+cv.2<-matrix(0)
+
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train.1 <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age,data=data.train)
+lda.fit.train.2 <- lda(Transported ~ VIP+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age,  data=data.train)
+
+
+pred1.test.1 <- predict(lda.fit.train.1, newdata = data.test,type="response")$class
+pred1.test.2 <- predict(lda.fit.train.2, newdata = data.test,type="response")$class
+
+y1.1 <- data.test$Transported
+table(pred1.test.1, y1.1)
+cv.1[k]<- round(mean(pred1.test.1!=y1.1)*100,4)
+
+y1.2 <- data.test$Transported
+table(pred1.test.2, y1.2)
+cv.2[k]<- round(mean(pred1.test.2!=y1.2)*100,4)
+}
+
+m1<-mean(cv.1)
+m2<-mean(cv.2)
+c(m1,m2)
+```
+
+23.47842% is the smallest one from model 1(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age), so add Destination.
+
+```{r}
+#select 11 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.1<-matrix(0)
+
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train.1 <- lda(Transported ~ VIP+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age+Destination,  data=data.train)
+
+
+pred1.test.1 <- predict(lda.fit.train.1, newdata = data.test,type="response")$class
+
+y1.1 <- data.test$Transported
+table(pred1.test.1, y1.1)
+cv.1[k]<- round(mean(pred1.test.1!=y1.1)*100,4)
+}
+
+m1<-mean(cv.1)
+m1
+```
+we can find this rate=23.50144% ,which is larger than 23.47842% from last part.
+So we finally choose the model(lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age,data=data.train)) with lowest miss-classification rate.
+Best model is Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age
+
+
+#calculate the best model's CV and SE.
+we can get the CV=23.47842, SE=0.4812744.
+[CV,CV-SE,CV+SE]=[23.47842, 22.99715, 23.95969]
+```{r}
+#select 10 variables
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.e<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+lda.fit.train <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age,data=data.train)
+
+pred.e <- predict(lda.fit.train, newdata = data.test,type="response")$class
+
+y.e <- data.test$Transported
+table(pred.e, y.e)
+cv.e[k]<- round(mean(pred.e!=y.e)*100,4)
+}
+
+mean(cv.e)
+cv.sd<-sd(cv.e)/sqrt(k)
+cv.sd
+print(c(mean(cv.e),mean(cv.e)-cv.sd,mean(cv.e)+cv.sd))
+```
+
+#e.ii. 
+```{r}
+#best model with validation data set
+set.seed(7460189)
+
+lda.fit.validation <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age,data=validation)
+
+
+pred.e2 <- predict(lda.fit.validation)$class
+
+y.e2 <- validation$Transported
+tab<-table(pred.e2, y.e2)
+tab
+```
+
+the overall miss-classification rate is 0.2322857
+the false-positive rates is 0.1681235
+the false negative rates is 0.2940022
+```{r}
+#overall miss-classification rate
+overall.e<-(tab[1,2]+tab[2,1])/sum(tab)
+overall.e
+#false-positive rates
+false.pos.e<-tab[2,1]/(tab[2,1]+tab[1,1])
+false.pos.e
+#false negative rates
+false.neg.e<-tab[1,2]/(tab[1,2]+tab[2,2])
+false.neg.e
+```
+
+
+```{r}
+#vary the threshold
+threshold <- seq(0.01, 0.5, by=0.01)
+n.t <- length(threshold)
+
+overalle <- rep(0, n.t)
+false.pose <- rep(0, n.t)
+false.nege <- rep(0, n.t)
+
+prede<-predict(lda.fit.validation)$posterior[,2]
+for(i in 1:n.t){
+  y.e<-validation$Transported
+  pred.i.e <- rep("FALSE", length(y.e)) 
+  pred.i.e[prede>= threshold[i]] <- "TRUE"
+  
+  tab <- table(pred.i.e, y.e)
+  overalle[i] <- (tab[1,2]+tab[2,1])/sum(tab)
+  false.pose[i] <- tab[2,1]/(tab[2,1]+tab[1,1])
+  false.nege[i] <- tab[1,2]/(tab[1,2]+tab[2,2])
+}
+```
+
+
+```{r}
+plot(threshold, overalle, lwd=3, type="l", ylim=c(0, 0.8), ylab="Error Rate")
+lines(threshold, false.pose, col="orange", lwd=3)
+lines(threshold, false.nege, col="blue", lwd=3)
+legend("topleft", legend=c("overall", "false.pos", "false.neg"), col=c("black", "orange", "blue"), 
+       lty=c(1,1,1), lwd=3 )
+```
+we can find that changing the threshold will change the rates.
+We can find that both the overall and false positive rates decrease as the threshold value increases from 0 to 0.5.
+we can also find that false negative rate increases as the threshold value increases from 0 to 0.5.
+So, to reduce the overall and false positive rates, we may want to reduce the threshold to 0.4 or slightly larger.(no larger than 0.5)
+
+
+
+#e.v
+```{r}
+#for test data
+set.seed(7460189)
+boot.fn <- function(train, Index){
+lda.fit <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age,data=train,subset=Index)
+out <- predict(lda.fit,test[1:5,],type="response")$posterior[,2]
+return(out)
+}
+n <- nrow(train)
+Index <- sample(1:n, replace=TRUE)
+boot.fn(train, Index)
+
+boot(train, boot.fn, 100)
+```
+
+the 95% confidence intervals for the predicted probability of being transported for the first 5 individuals in the test data set are under below.
+```{r}
+CI.e=matrix(0,nrow=5, ncol=2)
+cil.e=c(0.8218531-1.96*0.012037122,0.1000147-1.96*0.010957636,0.9645836-1.96*0.003092576,0.8725726-1.96*0.013783673,0.3993555-1.96*0.017380958)
+cih.e=c(0.8218531+1.96*0.012037122,0.1000147+1.96*0.010957636,0.9645836+1.96*0.003092576,0.8725726+1.96*0.013783673,0.3993555+1.96*0.017380958)
+ for (i in 1:5){
+    CI.e[i,1]=cil.e[i]
+    CI.e[i,2]=cih.e[i]
+ }
+CI.e
+```
+
+
+```{r}
+#for validation data
+set.seed(7460189)
+boot.fn <- function(train, Index){
+lda.fit <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age,data=train,subset=Index)
+out <- predict(lda.fit,validation[1:5,],type="response")$posterior[,2]
+return(out)
+}
+n <- nrow(train)
+Index <- sample(1:n, replace=TRUE)
+boot.fn(train, Index)
+boot(train, boot.fn, 100)
+```
+the CIs for the first 5 individuals in the test data set are under below.
+```{r}
+CI.ve=matrix(0,nrow=5, ncol=2)
+cil.ve=c(0.8707443-1.96*0.011036066,0.3929089-1.96*0.018753965,0.8691579-1.96*0.011033064,0.1382461-1.96*0.009641906,0.2328901-1.96*0.017017278)
+cih.ve=c(0.8707443+1.96*0.011036066,0.3929089+1.96*0.018753965,0.8691579+1.96*0.011033064,0.1382461+1.96*0.009641906,0.2328901+1.96*0.017017278)
+ for (i in 1:5){
+    CI.ve[i,1]=cil.ve[i]
+    CI.ve[i,2]=cih.ve[i]
+ }
+CI.ve
+```
+
+
+#e.vi.
+My Score is 0.76689
+the miss-classification rate is 1-0.76689=0.23311.
+My ranking is 1517.
+```{r}
+lda.best <- lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age,data=train)
+lda.best
+
+pred.lda <- predict(lda.best, newdata = test,type="response")$posterior[,2]
+y.hat.e <- rep(0, length(test))
+y.hat.e[pred.lda>=0.5] <- 1
+y.hat.e[pred.lda<0.5] <- 0
+y.hat.e<- as.factor(y.hat.e)
+y.hat.e<- recode_factor(y.hat.e,"1" = "True", "0" = "False")
+output <- data.frame(submission$PassengerId,y.hat.e)%>%
+  rename(Transported = y.hat.e)
+write_csv(output, "submission_e.csv")
+```
+we can find the miss-classification rate is lower tha glm(), so maybe this model is better.
+lda  use the full likelihood based on p(x,y)
+it is obey the linear assumption, and get a good classification results than glm()
+#f.i use qda
+same method as part d
+```{r}
+#select first variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cvf.1<-matrix(0)
+cvf.2<-matrix(0)
+cvf.3<-matrix(0)
+cvf.4<-matrix(0)
+cvf.5<-matrix(0)
+cvf.6<-matrix(0)
+cvf.7<-matrix(0)
+cvf.8<-matrix(0)
+cvf.9<-matrix(0)
+cvf.10<-matrix(0)
+cvf.11<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+qda.1 <- qda(Transported ~ Side, data=data.train)
+qda.2 <- qda(Transported ~ HomePlanet, data=data.train)
+qda.3 <- qda(Transported ~ CryoSleep, data=data.train)
+qda.4 <- qda(Transported ~ Destination,data=data.train)
+qda.5 <- qda(Transported ~ Age, data=data.train)
+qda.6 <- qda(Transported ~ VIP,  data=data.train)
+qda.7 <- qda(Transported ~ RoomService, data=data.train)
+qda.8 <- qda(Transported ~ FoodCourt, data=data.train)
+qda.9 <- qda(Transported ~ ShoppingMall, data=data.train)
+qda.10 <- qda(Transported ~ Spa,  data=data.train)
+qda.11 <- qda(Transported ~ VRDeck,  data=data.train)
+
+pred1.f.1 <- predict(qda.1, newdata = data.test,type="response")$class
+pred1.f.2 <- predict(qda.2, newdata = data.test,type="response")$class
+pred1.f.3 <- predict(qda.3, newdata = data.test,type="response")$class
+pred1.f.4 <- predict(qda.4, newdata = data.test,type="response")$class
+pred1.f.5 <- predict(qda.5, newdata = data.test,type="response")$class
+pred1.f.6 <- predict(qda.6, newdata = data.test,type="response")$class
+pred1.f.7 <- predict(qda.7, newdata = data.test,type="response")$class
+pred1.f.8 <- predict(qda.8, newdata = data.test,type="response")$class
+pred1.f.9 <- predict(qda.9, newdata = data.test,type="response")$class
+pred1.f.10 <- predict(qda.10, newdata = data.test,type="response")$class
+pred1.f.11 <- predict(qda.11, newdata = data.test,type="response")$class
+  
+
+y1.f1 <- data.test$Transported
+table(pred1.f.1, y1.f1)
+cvf.1[k]<- round(mean(pred1.f.1!=y1.f1)*100,4)
+
+y1.f2 <- data.test$Transported
+table(pred1.f.2, y1.f2)
+cvf.2[k]<- round(mean(pred1.f.2!=y1.f2)*100,4)
+
+y1.f3 <- data.test$Transported
+table(pred1.f.3, y1.f3)
+cvf.3[k]<- round(mean(pred1.f.3!=y1.f3)*100,4)
+
+y1.f4 <- data.test$Transported
+table(pred1.f.4, y1.f4)
+cvf.4[k]<- round(mean(pred1.f.4!=y1.f4)*100,4)
+
+y1.f5 <- data.test$Transported
+table(pred1.f.5, y1.f5)
+cvf.5[k]<- round(mean(pred1.f.5!=y1.f5)*100,4)
+
+y1.f6 <- data.test$Transported
+table(pred1.f.6, y1.f6)
+cvf.6[k]<- round(mean(pred1.f.6!=y1.f6)*100,4)
+
+y1.f7 <- data.test$Transported
+table(pred1.f.7, y1.f7)
+cvf.7[k]<- round(mean(pred1.f.7!=y1.f7)*100,4)
+
+y1.f8 <- data.test$Transported
+table(pred1.f.8, y1.f8)
+cvf.8[k]<- round(mean(pred1.f.8!=y1.f8)*100,4)
+
+y1.f9 <- data.test$Transported
+table(pred1.f.9, y1.f9)
+cvf.9[k]<- round(mean(pred1.f.9!=y1.f9)*100,4)
+
+y1.f10 <- data.test$Transported
+table(pred1.f.10, y1.f10)
+cvf.10[k]<- round(mean(pred1.f.10!=y1.f10)*100,4)
+
+y1.f11 <- data.test$Transported
+table(pred1.f.11, y1.f11)
+cvf.11[k]<- round(mean(pred1.f.11!=y1.f11)*100,4)
+}
+
+m1<-mean(cvf.1)
+m2<-mean(cvf.2)
+m3<-mean(cvf.3)
+m4<-mean(cvf.4)
+m5<-mean(cvf.5)
+m6<-mean(cvf.6)
+m7<-mean(cvf.7)
+m8<-mean(cvf.8)
+m9<-mean(cvf.9)
+m10<-mean(cvf.10)
+m11<-mean(cvf.11)
+c(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11)
+```
+
+the smallest one(28.17217%) is from model 3(Transported ~ CryoSleep), so we first add variable CryoSleep to my model.
+
+
+```{r}
+#select 2 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cvf.1<-matrix(0)
+cvf.2<-matrix(0)
+cvf.3<-matrix(0)
+cvf.4<-matrix(0)
+cvf.5<-matrix(0)
+cvf.6<-matrix(0)
+cvf.7<-matrix(0)
+cvf.8<-matrix(0)
+cvf.9<-matrix(0)
+cvf.10<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+qda.1 <- qda(Transported ~ Side+CryoSleep, data=data.train)
+qda.2 <- qda(Transported ~ HomePlanet+CryoSleep, data=data.train)
+
+qda.3 <- qda(Transported ~ Destination+CryoSleep,data=data.train)
+qda.4 <- qda(Transported ~ Age+CryoSleep, data=data.train)
+qda.5 <- qda(Transported ~ VIP+CryoSleep,  data=data.train)
+qda.6 <- qda(Transported ~ RoomService+CryoSleep, data=data.train)
+qda.7 <- qda(Transported ~ FoodCourt+CryoSleep, data=data.train)
+qda.8 <- qda(Transported ~ ShoppingMall+CryoSleep, data=data.train)
+qda.9 <- qda(Transported ~ Spa+CryoSleep,  data=data.train)
+qda.10 <- qda(Transported ~ VRDeck+CryoSleep,  data=data.train)
+
+pred1.f.1 <- predict(qda.1, newdata = data.test,type="response")$class
+pred1.f.2 <- predict(qda.2, newdata = data.test,type="response")$class
+pred1.f.3 <- predict(qda.3, newdata = data.test,type="response")$class
+pred1.f.4 <- predict(qda.4, newdata = data.test,type="response")$class
+pred1.f.5 <- predict(qda.5, newdata = data.test,type="response")$class
+pred1.f.6 <- predict(qda.6, newdata = data.test,type="response")$class
+pred1.f.7 <- predict(qda.7, newdata = data.test,type="response")$class
+pred1.f.8 <- predict(qda.8, newdata = data.test,type="response")$class
+pred1.f.9 <- predict(qda.9, newdata = data.test,type="response")$class
+pred1.f.10 <- predict(qda.10, newdata = data.test,type="response")$class
+  
+
+y1.f1 <- data.test$Transported
+table(pred1.f.1, y1.f1)
+cvf.1[k]<- round(mean(pred1.f.1!=y1.f1)*100,4)
+
+y1.f2 <- data.test$Transported
+table(pred1.f.2, y1.f2)
+cvf.2[k]<- round(mean(pred1.f.2!=y1.f2)*100,4)
+
+y1.f3 <- data.test$Transported
+table(pred1.f.3, y1.f3)
+cvf.3[k]<- round(mean(pred1.f.3!=y1.f3)*100,4)
+
+y1.f4 <- data.test$Transported
+table(pred1.f.4, y1.f4)
+cvf.4[k]<- round(mean(pred1.f.4!=y1.f4)*100,4)
+
+y1.f5 <- data.test$Transported
+table(pred1.f.5, y1.f5)
+cvf.5[k]<- round(mean(pred1.f.5!=y1.f5)*100,4)
+
+y1.f6 <- data.test$Transported
+table(pred1.f.6, y1.f6)
+cvf.6[k]<- round(mean(pred1.f.6!=y1.f6)*100,4)
+
+y1.f7 <- data.test$Transported
+table(pred1.f.7, y1.f7)
+cvf.7[k]<- round(mean(pred1.f.7!=y1.f7)*100,4)
+
+y1.f8 <- data.test$Transported
+table(pred1.f.8, y1.f8)
+cvf.8[k]<- round(mean(pred1.f.8!=y1.f8)*100,4)
+
+y1.f9 <- data.test$Transported
+table(pred1.f.9, y1.f9)
+cvf.9[k]<- round(mean(pred1.f.9!=y1.f9)*100,4)
+
+y1.f10 <- data.test$Transported
+table(pred1.f.10, y1.f10)
+cvf.10[k]<- round(mean(pred1.f.10!=y1.f10)*100,4)
+}
+
+m1<-mean(cvf.1)
+m2<-mean(cvf.2)
+m3<-mean(cvf.3)
+m4<-mean(cvf.4)
+m5<-mean(cvf.5)
+m6<-mean(cvf.6)
+m7<-mean(cvf.7)
+m8<-mean(cvf.8)
+m9<-mean(cvf.9)
+m10<-mean(cvf.10)
+c(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10)
+```
+model 7(Transported ~ FoodCourt+CryoSleep) has the smallest rate (26.80318%),  so add FoodCourt for next.
+
+
+
+
+```{r}
+#select 3 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cvf.1<-matrix(0)
+cvf.2<-matrix(0)
+cvf.3<-matrix(0)
+cvf.4<-matrix(0)
+cvf.5<-matrix(0)
+cvf.6<-matrix(0)
+cvf.7<-matrix(0)
+cvf.8<-matrix(0)
+cvf.9<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+qda.1 <- qda(Transported ~ Side+CryoSleep+FoodCourt, data=data.train)
+qda.2 <- qda(Transported ~ HomePlanet+CryoSleep+FoodCourt, data=data.train)
+qda.3 <- qda(Transported ~ Destination+CryoSleep+FoodCourt,data=data.train)
+qda.4 <- qda(Transported ~ Age+CryoSleep+FoodCourt, data=data.train)
+qda.5 <- qda(Transported ~ VIP+CryoSleep+FoodCourt,  data=data.train)
+qda.6 <- qda(Transported ~ RoomService+CryoSleep+FoodCourt, data=data.train)
+
+qda.7 <- qda(Transported ~ ShoppingMall+CryoSleep+FoodCourt, data=data.train)
+qda.8 <- qda(Transported ~ Spa+CryoSleep+FoodCourt,  data=data.train)
+qda.9 <- qda(Transported ~ VRDeck+CryoSleep+FoodCourt,  data=data.train)
+
+pred1.f.1 <- predict(qda.1, newdata = data.test,type="response")$class
+pred1.f.2 <- predict(qda.2, newdata = data.test,type="response")$class
+pred1.f.3 <- predict(qda.3, newdata = data.test,type="response")$class
+pred1.f.4 <- predict(qda.4, newdata = data.test,type="response")$class
+pred1.f.5 <- predict(qda.5, newdata = data.test,type="response")$class
+pred1.f.6 <- predict(qda.6, newdata = data.test,type="response")$class
+pred1.f.7 <- predict(qda.7, newdata = data.test,type="response")$class
+pred1.f.8 <- predict(qda.8, newdata = data.test,type="response")$class
+pred1.f.9 <- predict(qda.9, newdata = data.test,type="response")$class
+  
+
+y1.f1 <- data.test$Transported
+table(pred1.f.1, y1.f1)
+cvf.1[k]<- round(mean(pred1.f.1!=y1.f1)*100,4)
+
+y1.f2 <- data.test$Transported
+table(pred1.f.2, y1.f2)
+cvf.2[k]<- round(mean(pred1.f.2!=y1.f2)*100,4)
+
+y1.f3 <- data.test$Transported
+table(pred1.f.3, y1.f3)
+cvf.3[k]<- round(mean(pred1.f.3!=y1.f3)*100,4)
+
+y1.f4 <- data.test$Transported
+table(pred1.f.4, y1.f4)
+cvf.4[k]<- round(mean(pred1.f.4!=y1.f4)*100,4)
+
+y1.f5 <- data.test$Transported
+table(pred1.f.5, y1.f5)
+cvf.5[k]<- round(mean(pred1.f.5!=y1.f5)*100,4)
+
+y1.f6 <- data.test$Transported
+table(pred1.f.6, y1.f6)
+cvf.6[k]<- round(mean(pred1.f.6!=y1.f6)*100,4)
+
+y1.f7 <- data.test$Transported
+table(pred1.f.7, y1.f7)
+cvf.7[k]<- round(mean(pred1.f.7!=y1.f7)*100,4)
+
+y1.f8 <- data.test$Transported
+table(pred1.f.8, y1.f8)
+cvf.8[k]<- round(mean(pred1.f.8!=y1.f8)*100,4)
+
+y1.f9 <- data.test$Transported
+table(pred1.f.9, y1.f9)
+cvf.9[k]<- round(mean(pred1.f.9!=y1.f9)*100,4)
+}
+
+m1<-mean(cvf.1)
+m2<-mean(cvf.2)
+m3<-mean(cvf.3)
+m4<-mean(cvf.4)
+m5<-mean(cvf.5)
+m6<-mean(cvf.6)
+m7<-mean(cvf.7)
+m8<-mean(cvf.8)
+m9<-mean(cvf.9)
+c(m1,m2,m3,m4,m5,m6,m7,m8,m9)
+min(c(m1,m2,m3,m4,m5,m6,m7,m8,m9))
+```
+
+26.05545% is the smallest rate from model 7 (Transported ~ ShoppingMall+CryoSleep+FoodCourt), so add ShoppingMall.
+
+
+
+
+```{r}
+#select 4 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cvf.1<-matrix(0)
+cvf.2<-matrix(0)
+cvf.3<-matrix(0)
+cvf.4<-matrix(0)
+cvf.5<-matrix(0)
+cvf.6<-matrix(0)
+cvf.7<-matrix(0)
+cvf.8<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+qda.1 <- qda(Transported ~ Side+CryoSleep+FoodCourt+ShoppingMall, data=data.train)
+qda.2 <- qda(Transported ~ HomePlanet+CryoSleep+FoodCourt+ShoppingMall, data=data.train)
+qda.3 <- qda(Transported ~ Destination+CryoSleep+FoodCourt+ShoppingMall,data=data.train)
+qda.4 <- qda(Transported ~ Age+CryoSleep+FoodCourt+ShoppingMall, data=data.train)
+qda.5 <- qda(Transported ~ VIP+CryoSleep+FoodCourt+ShoppingMall,  data=data.train)
+qda.6 <- qda(Transported ~ RoomService+CryoSleep+FoodCourt+ShoppingMall, data=data.train)
+
+qda.7 <- qda(Transported ~ Spa+CryoSleep+FoodCourt+ShoppingMall,  data=data.train)
+qda.8 <- qda(Transported ~ VRDeck+CryoSleep+FoodCourt+ShoppingMall,  data=data.train)
+
+pred1.f.1 <- predict(qda.1, newdata = data.test,type="response")$class
+pred1.f.2 <- predict(qda.2, newdata = data.test,type="response")$class
+pred1.f.3 <- predict(qda.3, newdata = data.test,type="response")$class
+pred1.f.4 <- predict(qda.4, newdata = data.test,type="response")$class
+pred1.f.5 <- predict(qda.5, newdata = data.test,type="response")$class
+pred1.f.6 <- predict(qda.6, newdata = data.test,type="response")$class
+pred1.f.7 <- predict(qda.7, newdata = data.test,type="response")$class
+pred1.f.8 <- predict(qda.8, newdata = data.test,type="response")$class
+  
+
+y1.f1 <- data.test$Transported
+table(pred1.f.1, y1.f1)
+cvf.1[k]<- round(mean(pred1.f.1!=y1.f1)*100,4)
+
+y1.f2 <- data.test$Transported
+table(pred1.f.2, y1.f2)
+cvf.2[k]<- round(mean(pred1.f.2!=y1.f2)*100,4)
+
+y1.f3 <- data.test$Transported
+table(pred1.f.3, y1.f3)
+cvf.3[k]<- round(mean(pred1.f.3!=y1.f3)*100,4)
+
+y1.f4 <- data.test$Transported
+table(pred1.f.4, y1.f4)
+cvf.4[k]<- round(mean(pred1.f.4!=y1.f4)*100,4)
+
+y1.f5 <- data.test$Transported
+table(pred1.f.5, y1.f5)
+cvf.5[k]<- round(mean(pred1.f.5!=y1.f5)*100,4)
+
+y1.f6 <- data.test$Transported
+table(pred1.f.6, y1.f6)
+cvf.6[k]<- round(mean(pred1.f.6!=y1.f6)*100,4)
+
+y1.f7 <- data.test$Transported
+table(pred1.f.7, y1.f7)
+cvf.7[k]<- round(mean(pred1.f.7!=y1.f7)*100,4)
+
+y1.f8 <- data.test$Transported
+table(pred1.f.8, y1.f8)
+cvf.8[k]<- round(mean(pred1.f.8!=y1.f8)*100,4)
+}
+
+m1<-mean(cvf.1)
+m2<-mean(cvf.2)
+m3<-mean(cvf.3)
+m4<-mean(cvf.4)
+m5<-mean(cvf.5)
+m6<-mean(cvf.6)
+m7<-mean(cvf.7)
+m8<-mean(cvf.8)
+c(m1,m2,m3,m4,m5,m6,m7,m8)
+min(c(m1,m2,m3,m4,m5,m6,m7,m8))
+```
+25.77918% is the smallest rate from model 6(Transported ~ RoomService+CryoSleep+FoodCourt+ShoppingMall), so add RoomService next.
+
+
+
+
+
+```{r}
+#select 5 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cvf.1<-matrix(0)
+cvf.2<-matrix(0)
+cvf.3<-matrix(0)
+cvf.4<-matrix(0)
+cvf.5<-matrix(0)
+cvf.6<-matrix(0)
+cvf.7<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+qda.1 <- qda(Transported ~ Side+CryoSleep+FoodCourt+ShoppingMall+RoomService, data=data.train)
+qda.2 <- qda(Transported ~ HomePlanet+CryoSleep+FoodCourt+ShoppingMall+RoomService, data=data.train)
+qda.3 <- qda(Transported ~ Destination+CryoSleep+FoodCourt+ShoppingMall+RoomService,data=data.train)
+qda.4 <- qda(Transported ~ Age+CryoSleep+FoodCourt+ShoppingMall+RoomService, data=data.train)
+qda.5 <- qda(Transported ~ VIP+CryoSleep+FoodCourt+ShoppingMall+RoomService,  data=data.train)
+
+qda.6 <- qda(Transported ~ Spa+CryoSleep+FoodCourt+ShoppingMall+RoomService,  data=data.train)
+qda.7 <- qda(Transported ~ VRDeck+CryoSleep+FoodCourt+ShoppingMall+RoomService,  data=data.train)
+
+pred1.f.1 <- predict(qda.1, newdata = data.test,type="response")$class
+pred1.f.2 <- predict(qda.2, newdata = data.test,type="response")$class
+pred1.f.3 <- predict(qda.3, newdata = data.test,type="response")$class
+pred1.f.4 <- predict(qda.4, newdata = data.test,type="response")$class
+pred1.f.5 <- predict(qda.5, newdata = data.test,type="response")$class
+pred1.f.6 <- predict(qda.6, newdata = data.test,type="response")$class
+pred1.f.7 <- predict(qda.7, newdata = data.test,type="response")$class
+  
+
+y1.f1 <- data.test$Transported
+table(pred1.f.1, y1.f1)
+cvf.1[k]<- round(mean(pred1.f.1!=y1.f1)*100,4)
+
+y1.f2 <- data.test$Transported
+table(pred1.f.2, y1.f2)
+cvf.2[k]<- round(mean(pred1.f.2!=y1.f2)*100,4)
+
+y1.f3 <- data.test$Transported
+table(pred1.f.3, y1.f3)
+cvf.3[k]<- round(mean(pred1.f.3!=y1.f3)*100,4)
+
+y1.f4 <- data.test$Transported
+table(pred1.f.4, y1.f4)
+cvf.4[k]<- round(mean(pred1.f.4!=y1.f4)*100,4)
+
+y1.f5 <- data.test$Transported
+table(pred1.f.5, y1.f5)
+cvf.5[k]<- round(mean(pred1.f.5!=y1.f5)*100,4)
+
+y1.f6 <- data.test$Transported
+table(pred1.f.6, y1.f6)
+cvf.6[k]<- round(mean(pred1.f.6!=y1.f6)*100,4)
+
+y1.f7 <- data.test$Transported
+table(pred1.f.7, y1.f7)
+cvf.7[k]<- round(mean(pred1.f.7!=y1.f7)*100,4)
+}
+
+m1<-mean(cvf.1)
+m2<-mean(cvf.2)
+m3<-mean(cvf.3)
+m4<-mean(cvf.4)
+m5<-mean(cvf.5)
+m6<-mean(cvf.6)
+m7<-mean(cvf.7)
+c(m1,m2,m3,m4,m5,m6,m7)
+min(c(m1,m2,m3,m4,m5,m6,m7))
+```
+
+model 4(Transported ~ Age+CryoSleep+FoodCourt+ShoppingMall+RoomService) has the smallest rate(25.49163%)
+So add Age next.
+
+
+
+```{r}
+#select 6 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cvf.1<-matrix(0)
+cvf.2<-matrix(0)
+cvf.3<-matrix(0)
+cvf.4<-matrix(0)
+cvf.5<-matrix(0)
+cvf.6<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+qda.1 <- qda(Transported ~ Side+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age, data=data.train)
+qda.2 <- qda(Transported ~ HomePlanet+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age, data=data.train)
+qda.3 <- qda(Transported ~ Destination+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age,data=data.train)
+
+qda.4 <- qda(Transported ~ VIP+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age,  data=data.train)
+qda.5 <- qda(Transported ~ Spa+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age,  data=data.train)
+qda.6 <- qda(Transported ~ VRDeck+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age,  data=data.train)
+
+pred1.f.1 <- predict(qda.1, newdata = data.test,type="response")$class
+pred1.f.2 <- predict(qda.2, newdata = data.test,type="response")$class
+pred1.f.3 <- predict(qda.3, newdata = data.test,type="response")$class
+pred1.f.4 <- predict(qda.4, newdata = data.test,type="response")$class
+pred1.f.5 <- predict(qda.5, newdata = data.test,type="response")$class
+pred1.f.6 <- predict(qda.6, newdata = data.test,type="response")$class
+  
+
+y1.f1 <- data.test$Transported
+table(pred1.f.1, y1.f1)
+cvf.1[k]<- round(mean(pred1.f.1!=y1.f1)*100,4)
+
+y1.f2 <- data.test$Transported
+table(pred1.f.2, y1.f2)
+cvf.2[k]<- round(mean(pred1.f.2!=y1.f2)*100,4)
+
+y1.f3 <- data.test$Transported
+table(pred1.f.3, y1.f3)
+cvf.3[k]<- round(mean(pred1.f.3!=y1.f3)*100,4)
+
+y1.f4 <- data.test$Transported
+table(pred1.f.4, y1.f4)
+cvf.4[k]<- round(mean(pred1.f.4!=y1.f4)*100,4)
+
+y1.f5 <- data.test$Transported
+table(pred1.f.5, y1.f5)
+cvf.5[k]<- round(mean(pred1.f.5!=y1.f5)*100,4)
+
+y1.f6 <- data.test$Transported
+table(pred1.f.6, y1.f6)
+cvf.6[k]<- round(mean(pred1.f.6!=y1.f6)*100,4)
+}
+
+m1<-mean(cvf.1)
+m2<-mean(cvf.2)
+m3<-mean(cvf.3)
+m4<-mean(cvf.4)
+m5<-mean(cvf.5)
+m6<-mean(cvf.6)
+c(m1,m2,m3,m4,m5,m6)
+min(c(m1,m2,m3,m4,m5,m6))
+```
+
+24.60604% is the smallest one from model 4(Transported ~ VIP+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age)
+so add VIP next.
+
+
+
+
+```{r}
+#select 7 variable
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cvf.1<-matrix(0)
+cvf.2<-matrix(0)
+cvf.3<-matrix(0)
+cvf.4<-matrix(0)
+cvf.5<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+qda.1 <- qda(Transported ~ Side+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age+VIP, data=data.train)
+qda.2 <- qda(Transported ~ HomePlanet+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age+VIP, data=data.train)
+qda.3 <- qda(Transported ~ Destination+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age+VIP,data=data.train)
+
+qda.4 <- qda(Transported ~ Spa+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age+VIP,  data=data.train)
+qda.5 <- qda(Transported ~ VRDeck+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age+VIP,  data=data.train)
+
+pred1.f.1 <- predict(qda.1, newdata = data.test,type="response")$class
+pred1.f.2 <- predict(qda.2, newdata = data.test,type="response")$class
+pred1.f.3 <- predict(qda.3, newdata = data.test,type="response")$class
+pred1.f.4 <- predict(qda.4, newdata = data.test,type="response")$class
+pred1.f.5 <- predict(qda.5, newdata = data.test,type="response")$class
+  
+
+y1.f1 <- data.test$Transported
+table(pred1.f.1, y1.f1)
+cvf.1[k]<- round(mean(pred1.f.1!=y1.f1)*100,4)
+
+y1.f2 <- data.test$Transported
+table(pred1.f.2, y1.f2)
+cvf.2[k]<- round(mean(pred1.f.2!=y1.f2)*100,4)
+
+y1.f3 <- data.test$Transported
+table(pred1.f.3, y1.f3)
+cvf.3[k]<- round(mean(pred1.f.3!=y1.f3)*100,4)
+
+y1.f4 <- data.test$Transported
+table(pred1.f.4, y1.f4)
+cvf.4[k]<- round(mean(pred1.f.4!=y1.f4)*100,4)
+
+y1.f5 <- data.test$Transported
+table(pred1.f.5, y1.f5)
+cvf.5[k]<- round(mean(pred1.f.5!=y1.f5)*100,4)
+}
+
+m1<-mean(cvf.1)
+m2<-mean(cvf.2)
+m3<-mean(cvf.3)
+m4<-mean(cvf.4)
+m5<-mean(cvf.5)
+c(m1,m2,m3,m4,m5)
+min(c(m1,m2,m3,m4,m5))
+```
+
+24.75545% is the smallest one from model 1.
+But 24.75545% > 24.60604%, so we just stop here and choose model with smallest miss-classification rate (24.60604%)
+the best model using quadratic discriminant analysis is qda(Transported ~ VIP+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age,  data=data.train)
+
+
+#calculate the best model's CV and SE.
+we can get the CV=24.60604, SE=0.3605148.
+[CV,CV-SE,CV+SE]=[24.60604, 24.24553, 24.96655]
+```{r}
+#select 6 variables
+n<nrow(train)
+set.seed(7460189)
+k<-10
+fold<-sample(rep(1:k, each=n/k))
+cv.f<-matrix(0)
+
+for(k in 1:k){
+data.train<- train[fold!=k,]
+data.test<-train[fold==k,]
+qda.f <- qda(Transported ~ VIP+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age,data=data.train)
+
+pred.f <- predict(qda.f, newdata = data.test,type="response")$class
+
+y.f <- data.test$Transported
+table(pred.f, y.f)
+cv.f[k]<- round(mean(pred.f!=y.f)*100,4)
+}
+
+mean(cv.f)
+cv.sd.f<-sd(cv.f)/sqrt(k)
+cv.sd.f
+print(c(mean(cv.f),mean(cv.f)-cv.sd.f,mean(cv.f)+cv.sd.f))
+```
+
+
+#f.ii.
+```{r}
+#best model with validation data set
+set.seed(7460189)
+
+qda.fit.validation <- qda(Transported ~ VIP+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age,data=validation)
+
+
+pred.f2 <- predict(qda.fit.validation)$class
+
+y.f2 <- validation$Transported
+tab<-table(pred.f2, y.f2)
+tab
+```
+
+the overall miss-classification rate is 0.2427143
+the false-positive rates is 0.2403846
+the false negative rates is 0.2449552
+```{r}
+#overall miss-classification rate
+overall.f<-(tab[1,2]+tab[2,1])/sum(tab)
+overall.f
+#false-positive rates
+false.pos.f<-tab[2,1]/(tab[2,1]+tab[1,1])
+false.pos.f
+#false negative rates
+false.neg.f<-tab[1,2]/(tab[1,2]+tab[2,2])
+false.neg.f
+```
+
+```{r}
+#vary the threshold
+threshold <- seq(0.01, 0.5, by=0.01)
+n.t <- length(threshold)
+
+overallf <- rep(0, n.t)
+false.posf <- rep(0, n.t)
+false.negf <- rep(0, n.t)
+
+predf<-predict(qda.fit.validation)$posterior[,2]
+for(i in 1:n.t){
+  y.f<-validation$Transported
+  pred.i.f <- rep("FALSE", length(y.f)) 
+  pred.i.f[prede>= threshold[i]] <- "TRUE"
+  
+  tab <- table(pred.i.f, y.f)
+  overallf[i] <- (tab[1,2]+tab[2,1])/sum(tab)
+  false.posf[i] <- tab[2,1]/(tab[2,1]+tab[1,1])
+  false.negf[i] <- tab[1,2]/(tab[1,2]+tab[2,2])
+}
+```
+
+
+```{r}
+plot(threshold, overallf, lwd=3, type="l", ylim=c(0, 0.8), ylab="Error Rate")
+lines(threshold, false.posf, col="orange", lwd=3)
+lines(threshold, false.negf, col="blue", lwd=3)
+legend("topleft", legend=c("overall", "false.pos", "false.neg"), col=c("black", "orange", "blue"), 
+       lty=c(1,1,1), lwd=3 )
+```
+we can find that changing the threshold will change the rates.
+this plot looks similar as the plot of my best lda model.
+We can find that both the overall and false positive rates decrease as the threshold value increases from 0 to 0.5.
+we can also find that false negative rate increases as the threshold value increases from 0 to 0.5.
+So, to reduce the overall and false positive rates, we may want to reduce the threshold to 0.4 or slightly larger.(no larger than 0.5)
+
+#f.v 
+```{r}
+#for test data
+set.seed(7460189)
+boot.fn <- function(train, Index){
+qda.fit <- qda(Transported ~ VIP+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age,data=train,subset=Index)
+out <- predict(qda.fit,test[1:5,],type="response")$posterior[,2]
+return(out)
+}
+n <- nrow(train)
+Index <- sample(1:n, replace=TRUE)
+boot.fn(train, Index)
+
+boot(train, boot.fn, 100)
+```
+
+
+the 95% confidence intervals for the predicted probability of being transported for the first 5 individuals in the test data set are under below.
+```{r}
+CI.f=matrix(0,nrow=5, ncol=2)
+cil.f=c(0.9571529-1.96*0.009546699,0.3631770-1.96*0.044640334,0.9599332-1.96*0.008878462,0.9998220-1.96*0.003759578,0.4992292-1.96*0.041970230)
+cih.f=c(0.9571529+1.96*0.009546699,0.3631770+1.96*0.044640334,0.9599332+1.96*0.008878462,0.9998220+1.96*0.003759578,0.4992292+1.96*0.041970230)
+ for (i in 1:5){
+    CI.f[i,1]=cil.f[i]
+    CI.f[i,2]=cih.f[i]
+ }
+CI.f
+```
+
+
+
+```{r}
+#for validation data
+set.seed(7460189)
+boot.fn <- function(train, Index){
+qda.fit <- qda(Transported ~ VIP+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age,data=train,subset=Index)
+out <- predict(qda.fit,validation[1:5,],type="response")$posterior[,2]
+return(out)
+}
+n <- nrow(train)
+Index <- sample(1:n, replace=TRUE)
+boot.fn(train, Index)
+boot(train, boot.fn, 100)
+```
+the CIs for the first 5 individuals in the test data set are under below.
+```{r}
+CI.vf=matrix(0,nrow=5, ncol=2)
+cil.vf=c(0.9567986-1.96*0.01113404,0.5598210-1.96*0.05097814,0.9562125-1.96*0.01118159,0.2894406-1.96*0.03876398,0.3407567-1.96*0.04352273)
+cih.vf=c(0.9567986+1.96*0.01113404,0.5598210+1.96*0.05097814,0.9562125+1.96*0.01118159,0.2894406+1.96*0.03876398,0.3407567+1.96*0.04352273)
+ for (i in 1:5){
+    CI.vf[i,1]=cil.vf[i]
+    CI.vf[i,2]=cih.vf[i]
+ }
+CI.vf
+```
+
+
+#f.vi. 
+My Score is 0.76689
+the miss-classification rate is 1-0.76689=0.23311.
+My ranking is 1517.
+```{r}
+qda.best <- qda(Transported ~ VIP+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age,data=train)
+qda.best
+
+pred.qda <- predict(qda.best, newdata = test,type="response")$posterior[,2]
+y.hat.f <- rep(0, length(test))
+y.hat.f[pred.lda>=0.5] <- 1
+y.hat.f[pred.lda<0.5] <- 0
+y.hat.f<- as.factor(y.hat.f)
+y.hat.f<- recode_factor(y.hat.f,"1" = "True", "0" = "False")
+output <- data.frame(submission$PassengerId,y.hat.f)%>%
+  rename(Transported = y.hat.f)
+write_csv(output, "submission_f.csv")
+```
+for this part, the miss-classification rate is same as lda model, this may because they are quite similar.
+Despite strong assumptions, qda often produces good classification results.
+also, both lda and qda result are better than glm.
+
+#g.i
+use knn only work for numerial data.
+Accoding to the previous experience, variable CryoSleep always be the fist variable in the best model.
+For knn model, there are at least 2 variable in the model. So I just first choose CryoSleep and Age, and then add different variables.
+```{r}
+library(caret)
+train$Transported<-as.numeric(train$Transported)
+#for model with three var
+set.seed(7460189)
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+)
+set.seed(7460189)
+model1 <- train( Transported ~ CryoSleep+Age+Side,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+model2 <- train( Transported ~ CryoSleep+Age+HomePlanet,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model3 <- train( Transported ~ CryoSleep+Age+Destination,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model4 <- train( Transported ~ CryoSleep+Age+VIP,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+model5 <- train( Transported ~ CryoSleep+Age+RoomService,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model6 <- train( Transported ~ CryoSleep+Age+FoodCourt,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model7 <- train( Transported ~ CryoSleep+Age+ShoppingMall,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model8 <- train( Transported ~ CryoSleep+Age+Spa,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model9 <- train( Transported ~ CryoSleep+Age+VRDeck,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+model4
+plot(model4)
+
+predictions1 = predict(model1)
+y.hat.g1 <- rep(0, nrow(train)/10)
+y.hat.g1[predictions1>=0.5] <- 1
+y.hat.g1[predictions1<0.5] <- 0
+
+predictions2 = predict(model2)
+y.hat.g2 <- rep(0, nrow(train)/10)
+y.hat.g2[predictions2>=0.5] <- 1
+y.hat.g2[predictions2<0.5] <- 0
+
+predictions3 = predict(model3)
+y.hat.g3 <- rep(0, nrow(train)/10)
+y.hat.g3[predictions3>=0.5] <- 1
+y.hat.g3[predictions3<0.5] <- 0
+
+predictions4 = predict(model4)
+y.hat.g4 <- rep(0, nrow(train)/10)
+y.hat.g4[predictions4>=0.5] <- 1
+y.hat.g4[predictions4<0.5] <- 0
+
+predictions5 = predict(model5)
+y.hat.g5 <- rep(0, nrow(train)/10)
+y.hat.g5[predictions5>=0.5] <- 1
+y.hat.g5[predictions5<0.5] <- 0
+
+predictions6 = predict(model6)
+y.hat.g6 <- rep(0, nrow(train)/10)
+y.hat.g6[predictions6>=0.5] <- 1
+y.hat.g6[predictions6<0.5] <- 0
+
+predictions7 = predict(model7)
+y.hat.g7 <- rep(0, nrow(train)/10)
+y.hat.g7[predictions7>=0.5] <- 1
+y.hat.g7[predictions7<0.5] <- 0
+
+predictions8 = predict(model8)
+y.hat.g8 <- rep(0, nrow(train)/10)
+y.hat.g8[predictions8>=0.5] <- 1
+y.hat.g8[predictions8<0.5] <- 0
+
+predictions9 = predict(model9)
+y.hat.g9 <- rep(0, nrow(train)/10)
+y.hat.g9[predictions9>=0.5] <- 1
+y.hat.g9[predictions9<0.5] <- 0
+
+
+cv1<-round(mean(y.hat.g1!=train$Transported)*100,4)
+cv2<-round(mean(y.hat.g2!=train$Transported)*100,4)
+cv3<-round(mean(y.hat.g3!=train$Transported)*100,4)
+cv4<-round(mean(y.hat.g4!=train$Transported)*100,4)
+cv5<-round(mean(y.hat.g5!=train$Transported)*100,4)
+cv6<-round(mean(y.hat.g6!=train$Transported)*100,4)
+cv7<-round(mean(y.hat.g7!=train$Transported)*100,4)
+cv8<-round(mean(y.hat.g8!=train$Transported)*100,4)
+cv9<-round(mean(y.hat.g9!=train$Transported)*100,4)
+c(cv1,cv2,cv3,cv4,cv5,cv6,cv7,cv8,cv9)
+```
+we can find the smallest one is 23.5477% from model 6(Transported ~ CryoSleep+Age+FoodCourt), so add FoodCourt next.
+
+```{r}
+set.seed(7460189)
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+)
+set.seed(7460189)
+model1 <- train( Transported ~ CryoSleep+Age+Side+FoodCourt,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model2 <- train( Transported ~ CryoSleep+Age+HomePlanet+FoodCourt,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model3 <- train( Transported ~ CryoSleep+Age+Destination+FoodCourt,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model4 <- train( Transported ~ CryoSleep+Age+VIP+FoodCourt,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model5 <- train( Transported ~ CryoSleep+Age+RoomService+FoodCourt,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+model6 <- train( Transported ~ CryoSleep+Age+ShoppingMall+FoodCourt,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model7 <- train( Transported ~ CryoSleep+Age+Spa+FoodCourt,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model8 <- train( Transported ~ CryoSleep+Age+VRDeck+FoodCourt,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+predictions1 = predict(model1)
+y.hat.g1 <- rep(0, nrow(train)/10)
+y.hat.g1[predictions1>=0.5] <- 1
+y.hat.g1[predictions1<0.5] <- 0
+
+predictions2 = predict(model2)
+y.hat.g2 <- rep(0, nrow(train)/10)
+y.hat.g2[predictions2>=0.5] <- 1
+y.hat.g2[predictions2<0.5] <- 0
+
+predictions3 = predict(model3)
+y.hat.g3 <- rep(0, nrow(train)/10)
+y.hat.g3[predictions3>=0.5] <- 1
+y.hat.g3[predictions3<0.5] <- 0
+
+predictions4 = predict(model4)
+y.hat.g4 <- rep(0, nrow(train)/10)
+y.hat.g4[predictions4>=0.5] <- 1
+y.hat.g4[predictions4<0.5] <- 0
+
+predictions5 = predict(model5)
+y.hat.g5 <- rep(0, nrow(train)/10)
+y.hat.g5[predictions5>=0.5] <- 1
+y.hat.g5[predictions5<0.5] <- 0
+
+predictions6 = predict(model6)
+y.hat.g6 <- rep(0, nrow(train)/10)
+y.hat.g6[predictions6>=0.5] <- 1
+y.hat.g6[predictions6<0.5] <- 0
+
+predictions7 = predict(model7)
+y.hat.g7 <- rep(0, nrow(train)/10)
+y.hat.g7[predictions7>=0.5] <- 1
+y.hat.g7[predictions7<0.5] <- 0
+
+predictions8 = predict(model8)
+y.hat.g8 <- rep(0, nrow(train)/10)
+y.hat.g8[predictions8>=0.5] <- 1
+y.hat.g8[predictions8<0.5] <- 0
+
+
+cv1<-round(mean(y.hat.g1!=train$Transported)*100,4)
+cv2<-round(mean(y.hat.g2!=train$Transported)*100,4)
+cv3<-round(mean(y.hat.g3!=train$Transported)*100,4)
+cv4<-round(mean(y.hat.g4!=train$Transported)*100,4)
+cv5<-round(mean(y.hat.g5!=train$Transported)*100,4)
+cv6<-round(mean(y.hat.g6!=train$Transported)*100,4)
+cv7<-round(mean(y.hat.g7!=train$Transported)*100,4)
+cv8<-round(mean(y.hat.g8!=train$Transported)*100,4)
+c(cv1,cv2,cv3,cv4,cv5,cv6,cv7,cv8)
+```
+the smallest one is 22.2363% from model 6(Transported ~ CryoSleep+Age+ShoppingMall+FoodCourt)
+so add ShoppingMall next.
+
+
+```{r}
+set.seed(7460189)
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+)
+set.seed(7460189)
+model1 <- train( Transported ~ CryoSleep+Age+Side+FoodCourt+ShoppingMall,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+model2 <- train( Transported ~ CryoSleep+Age+HomePlanet+FoodCourt+ShoppingMall,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model3 <- train( Transported ~ CryoSleep+Age+Destination+FoodCourt+ShoppingMall,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model4 <- train( Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model5 <- train( Transported ~ CryoSleep+Age+RoomService+FoodCourt+ShoppingMall,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+
+model6 <- train( Transported ~ CryoSleep+Age+Spa+FoodCourt+ShoppingMall,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model7 <- train( Transported ~ CryoSleep+Age+VRDeck+FoodCourt+ShoppingMall,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+predictions1 = predict(model1)
+y.hat.g1 <- rep(0, nrow(train)/10)
+y.hat.g1[predictions1>=0.5] <- 1
+y.hat.g1[predictions1<0.5] <- 0
+
+predictions2 = predict(model2)
+y.hat.g2 <- rep(0, nrow(train)/10)
+y.hat.g2[predictions2>=0.5] <- 1
+y.hat.g2[predictions2<0.5] <- 0
+
+predictions3 = predict(model3)
+y.hat.g3 <- rep(0, nrow(train)/10)
+y.hat.g3[predictions3>=0.5] <- 1
+y.hat.g3[predictions3<0.5] <- 0
+
+predictions4 = predict(model4)
+y.hat.g4 <- rep(0, nrow(train)/10)
+y.hat.g4[predictions4>=0.5] <- 1
+y.hat.g4[predictions4<0.5] <- 0
+
+predictions5 = predict(model5)
+y.hat.g5 <- rep(0, nrow(train)/10)
+y.hat.g5[predictions5>=0.5] <- 1
+y.hat.g5[predictions5<0.5] <- 0
+
+predictions6 = predict(model6)
+y.hat.g6 <- rep(0, nrow(train)/10)
+y.hat.g6[predictions6>=0.5] <- 1
+y.hat.g6[predictions6<0.5] <- 0
+
+predictions7 = predict(model7)
+y.hat.g7 <- rep(0, nrow(train)/10)
+y.hat.g7[predictions7>=0.5] <- 1
+y.hat.g7[predictions7<0.5] <- 0
+
+cv1<-round(mean(y.hat.g1!=train$Transported)*100,4)
+cv2<-round(mean(y.hat.g2!=train$Transported)*100,4)
+cv3<-round(mean(y.hat.g3!=train$Transported)*100,4)
+cv4<-round(mean(y.hat.g4!=train$Transported)*100,4)
+cv5<-round(mean(y.hat.g5!=train$Transported)*100,4)
+cv6<-round(mean(y.hat.g6!=train$Transported)*100,4)
+cv7<-round(mean(y.hat.g7!=train$Transported)*100,4)
+c(cv1,cv2,cv3,cv4,cv5,cv6,cv7)
+```
+the smallest one is 20.9939% from model 6(Transported ~ CryoSleep+Age+Spa+FoodCourt+ShoppingMall)
+so add Spa.
+
+
+```{r}
+set.seed(7460189)
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+)
+set.seed(7460189)
+model1 <- train( Transported ~ CryoSleep+Age+Side+FoodCourt+ShoppingMall+Spa,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+model2 <- train( Transported ~ CryoSleep+Age+HomePlanet+FoodCourt+ShoppingMall+Spa,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model3 <- train( Transported ~ CryoSleep+Age+Destination+FoodCourt+ShoppingMall+Spa,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model4 <- train( Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall+Spa,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model5 <- train( Transported ~ CryoSleep+Age+RoomService+FoodCourt+ShoppingMall+Spa,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+model6 <- train( Transported ~ CryoSleep+Age+VRDeck+FoodCourt+ShoppingMall+Spa,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+predictions1 = predict(model1)
+y.hat.g1 <- rep(0, nrow(train)/10)
+y.hat.g1[predictions1>=0.5] <- 1
+y.hat.g1[predictions1<0.5] <- 0
+
+predictions2 = predict(model2)
+y.hat.g2 <- rep(0, nrow(train)/10)
+y.hat.g2[predictions2>=0.5] <- 1
+y.hat.g2[predictions2<0.5] <- 0
+
+predictions3 = predict(model3)
+y.hat.g3 <- rep(0, nrow(train)/10)
+y.hat.g3[predictions3>=0.5] <- 1
+y.hat.g3[predictions3<0.5] <- 0
+
+predictions4 = predict(model4)
+y.hat.g4 <- rep(0, nrow(train)/10)
+y.hat.g4[predictions4>=0.5] <- 1
+y.hat.g4[predictions4<0.5] <- 0
+
+predictions5 = predict(model5)
+y.hat.g5 <- rep(0, nrow(train)/10)
+y.hat.g5[predictions5>=0.5] <- 1
+y.hat.g5[predictions5<0.5] <- 0
+
+predictions6 = predict(model6)
+y.hat.g6 <- rep(0, nrow(train)/10)
+y.hat.g6[predictions6>=0.5] <- 1
+y.hat.g6[predictions6<0.5] <- 0
+
+cv1<-round(mean(y.hat.g1!=train$Transported)*100,4)
+cv2<-round(mean(y.hat.g2!=train$Transported)*100,4)
+cv3<-round(mean(y.hat.g3!=train$Transported)*100,4)
+cv4<-round(mean(y.hat.g4!=train$Transported)*100,4)
+cv5<-round(mean(y.hat.g5!=train$Transported)*100,4)
+cv6<-round(mean(y.hat.g6!=train$Transported)*100,4)
+c(cv1,cv2,cv3,cv4,cv5,cv6)
+```
+
+the smallest one is 20.3497% from model 6(Transported ~ CryoSleep+Age+VRDeck+FoodCourt+ShoppingMall+Spa)
+
+so add VRDeck.
+
+```{r}
+set.seed(7460189)
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+)
+set.seed(7460189)
+model1 <- train( Transported ~ CryoSleep+Age+Side+FoodCourt+ShoppingMall+Spa+VRDeck,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+model2 <- train( Transported ~ CryoSleep+Age+HomePlanet+FoodCourt+ShoppingMall+Spa+VRDeck,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model3 <- train( Transported ~ CryoSleep+Age+Destination+FoodCourt+ShoppingMall+Spa+VRDeck,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model4 <- train( Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall+Spa+VRDeck,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model5 <- train( Transported ~ CryoSleep+Age+RoomService+FoodCourt+ShoppingMall+Spa+VRDeck,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+predictions1 = predict(model1)
+y.hat.g1 <- rep(0, nrow(train)/10)
+y.hat.g1[predictions1>=0.5] <- 1
+y.hat.g1[predictions1<0.5] <- 0
+
+predictions2 = predict(model2)
+y.hat.g2 <- rep(0, nrow(train)/10)
+y.hat.g2[predictions2>=0.5] <- 1
+y.hat.g2[predictions2<0.5] <- 0
+
+predictions3 = predict(model3)
+y.hat.g3 <- rep(0, nrow(train)/10)
+y.hat.g3[predictions3>=0.5] <- 1
+y.hat.g3[predictions3<0.5] <- 0
+
+predictions4 = predict(model4)
+y.hat.g4 <- rep(0, nrow(train)/10)
+y.hat.g4[predictions4>=0.5] <- 1
+y.hat.g4[predictions4<0.5] <- 0
+
+predictions5 = predict(model5)
+y.hat.g5 <- rep(0, nrow(train)/10)
+y.hat.g5[predictions5>=0.5] <- 1
+y.hat.g5[predictions5<0.5] <- 0
+
+cv1<-round(mean(y.hat.g1!=train$Transported)*100,4)
+cv2<-round(mean(y.hat.g2!=train$Transported)*100,4)
+cv3<-round(mean(y.hat.g3!=train$Transported)*100,4)
+cv4<-round(mean(y.hat.g4!=train$Transported)*100,4)
+cv5<-round(mean(y.hat.g5!=train$Transported)*100,4)
+c(cv1,cv2,cv3,cv4,cv5)
+```
+19.4409% is the smallest one from model 5(Transported ~ CryoSleep+Age+RoomService+FoodCourt+ShoppingMall+Spa+VRDeck)
+so add RoomService.
+
+```{r}
+set.seed(7460189)
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+)
+set.seed(7460189)
+model1 <- train( Transported ~ CryoSleep+Age+Side+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+model2 <- train( Transported ~ CryoSleep+Age+HomePlanet+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model3 <- train( Transported ~ CryoSleep+Age+Destination+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model4 <- train( Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+
+predictions1 = predict(model1)
+y.hat.g1 <- rep(0, nrow(train)/10)
+y.hat.g1[predictions1>=0.5] <- 1
+y.hat.g1[predictions1<0.5] <- 0
+
+predictions2 = predict(model2)
+y.hat.g2 <- rep(0, nrow(train)/10)
+y.hat.g2[predictions2>=0.5] <- 1
+y.hat.g2[predictions2<0.5] <- 0
+
+predictions3 = predict(model3)
+y.hat.g3 <- rep(0, nrow(train)/10)
+y.hat.g3[predictions3>=0.5] <- 1
+y.hat.g3[predictions3<0.5] <- 0
+
+predictions4 = predict(model4)
+y.hat.g4 <- rep(0, nrow(train)/10)
+y.hat.g4[predictions4>=0.5] <- 1
+y.hat.g4[predictions4<0.5] <- 0
+
+cv1<-round(mean(y.hat.g1!=train$Transported)*100,4)
+cv2<-round(mean(y.hat.g2!=train$Transported)*100,4)
+cv3<-round(mean(y.hat.g3!=train$Transported)*100,4)
+cv4<-round(mean(y.hat.g4!=train$Transported)*100,4)
+c(cv1,cv2,cv3,cv4)
+```
+18.7967% is the smallest one from model 2(Transported ~ CryoSleep+Age+HomePlanet+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService)
+so add HomePlanet.
+
+
+```{r}
+set.seed(7460189)
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+)
+set.seed(7460189)
+model1 <- train( Transported ~ CryoSleep+Age+Side+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model2 <- train( Transported ~ CryoSleep+Age+Destination+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model3 <- train( Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+
+predictions1 = predict(model1)
+y.hat.g1 <- rep(0, nrow(train)/10)
+y.hat.g1[predictions1>=0.5] <- 1
+y.hat.g1[predictions1<0.5] <- 0
+
+predictions2 = predict(model2)
+y.hat.g2 <- rep(0, nrow(train)/10)
+y.hat.g2[predictions2>=0.5] <- 1
+y.hat.g2[predictions2<0.5] <- 0
+
+predictions3 = predict(model3)
+y.hat.g3 <- rep(0, nrow(train)/10)
+y.hat.g3[predictions3>=0.5] <- 1
+y.hat.g3[predictions3<0.5] <- 0
+
+cv1<-round(mean(y.hat.g1!=train$Transported)*100,4)
+cv2<-round(mean(y.hat.g2!=train$Transported)*100,4)
+cv3<-round(mean(y.hat.g3!=train$Transported)*100,4)
+c(cv1,cv2,cv3)
+```
+
+model 1(Transported ~ CryoSleep+Age+Side+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet) has the smallest value 18.4171%
+so add Side
+
+
+```{r}
+set.seed(7460189)
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+)
+set.seed(7460189)
+model1 <- train( Transported ~ CryoSleep+Age+Destination+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet+Side,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+model2 <- train( Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet+Side,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+
+predictions1 = predict(model1)
+y.hat.g1 <- rep(0, nrow(train)/10)
+y.hat.g1[predictions1>=0.5] <- 1
+y.hat.g1[predictions1<0.5] <- 0
+
+predictions2 = predict(model2)
+y.hat.g2 <- rep(0, nrow(train)/10)
+y.hat.g2[predictions2>=0.5] <- 1
+y.hat.g2[predictions2<0.5] <- 0
+
+cv1<-round(mean(y.hat.g1!=train$Transported)*100,4)
+cv2<-round(mean(y.hat.g2!=train$Transported)*100,4)
+c(cv1,cv2)
+```
+18.1180% is the smallest on until now from model 1(Transported ~ CryoSleep+Age+Destination+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet+Side)
+so we still nedd to add Destination.
+
+```{r}
+set.seed(7460189)
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+)
+set.seed(7460189)
+model1 <- train( Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet+Side+Destination,data = train,method = 'knn',preProcess = c("center", "scale"),trControl = ctrl)
+
+
+predictions1 = predict(model1)
+y.hat.g1 <- rep(0, nrow(train)/10)
+y.hat.g1[predictions1>=0.5] <- 1
+y.hat.g1[predictions1<0.5] <- 0
+cv1<-round(mean(y.hat.g1!=train$Transported)*100,4)
+cv1
+```
+
+we can find 18.095% still < 18.1180%
+so we should add all the variables into our model.
+Therefore, my best model according to knn is Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet+Side+Destination.
+
+```{r}
+model1
+cv.sd.g<-sd(cv1)/sqrt(10)
+cv.sd.g
+print(c(cv1,cv1-cv.sd.g,cv1+cv.sd.g))
+```
+
+
+#g.v
+#```{r}
+#for test data
+set.seed(7460189)
+boot.fn <- function(train, Index){
+  knn.fit <- train( Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet+Side+Destination,data = train,method = 'knn',preProcess = c("center", "scale"),subset=Index)
+
+out <- predict(knn.fit,newdata=test[1:5,])
+return(out)
+}
+n <- nrow(train)
+Index <- sample(1:n, replace=TRUE)
+boot.fn(train, Index)
+
+boot(train, boot.fn, 100)
+```
+#```{r}
+#for validation data
+set.seed(7460189)
+boot.fn <- function(train, Index){
+  knn.fit <- train( Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet+Side+Destination,data = validation,method = 'knn',preProcess = c("center", "scale"),subset=Index)
+
+out <- predict(knn.fit,newdata=test[1:5,])
+return(out)
+}
+n <- nrow(train)
+Index <- sample(1:n, replace=TRUE)
+boot.fn(train, Index)
+
+boot(train, boot.fn, 100)
+```
+
+
+
+
+
+#g.vi. (4 points) From your “best” model in 1(d)i, using the test data set submit your predictions to Kaggle. what was the miss-classification rate? what was your ranking?
+My Score is 0.78185
+the miss-classification rate is 1-0.78185=0.21815.
+My ranking is 1356.
+```{r}
+train$Transported<-as.numeric(train$Transported)
+knn.best <- train( Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet+Side+Destination,data = train,method = 'knn',preProcess = c("center", "scale"))
+knn.best
+
+pred.knn <- predict(knn.best, newdata = test)
+y.hat.ff <- rep(0, length(test))
+y.hat.ff[pred.knn>=0.5] <- 1
+y.hat.ff[pred.knn<0.5] <- 0
+y.hat.ff<- as.factor(y.hat.ff)
+y.hat.ff<- recode_factor(y.hat.ff,"1" = "True", "0" = "False")
+output <- data.frame(submission$PassengerId,y.hat.ff)%>%
+  rename(Transported = y.hat.ff)
+write_csv(output, "submission_g.csv")
+```
+
+#h for best models are;
+```{r}
+glm<-glm(Transported ~ RoomService+CryoSleep+FoodCourt+Spa+VRDeck, family=binomial, data=train)
+lda<-lda(Transported ~ Destination+CryoSleep+FoodCourt+Spa+VRDeck+HomePlanet+ShoppingMall+RoomService+Side+Age,data=train)
+qda<-qda(Transported ~ VIP+CryoSleep+FoodCourt+ShoppingMall+RoomService+Age,data=train)
+train$Transported<-as.numeric(train$Transported)
+#knn<-train( Transported ~ CryoSleep+Age+VIP+FoodCourt+ShoppingMall+Spa+VRDeck+RoomService+HomePlanet+Side+Destination,data = validation,method = 'knn',preProcess = c("center", "scale"))
+summary(glm)
+```
+we can find that by comparing with the result in kaggle, glm function give the best model with smallest miss-classification rate.
+so we can analysis accoding to the sumamry data of glm.
+After doing so many models, I found that all the best models chose CryoSleep first, because it had the smallest missclasification rate. The conclusion from the correlation coefficient above is consistent, that is, CryoSleep variable is most likely to affect the transported of passengers. The coefficient of CryoSleep is greater than 1, which means that passengers who choose low temperature to enter suspended animation are easier to be transported.
+Also, all models contians FoodCourt variable, so we can analysis this variable.
+the coefficient sign of foodcourt is positive, which means that people without foodcourt are being transported.
+
+
+
+
