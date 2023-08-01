@@ -1,9 +1,3 @@
----
-title: "Assignment 2"
-author: "Mengyu Sun u7460189"
-date: "2022/5/4"
-output: html_document
----
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(cho = FALSE, warning = FALSE, message = FALSE)
